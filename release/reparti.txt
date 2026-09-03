@@ -1,0 +1,10 @@
+# Reparti dell'azienda - un reparto per riga
+# Le righe che iniziano con # sono commenti
+AMMINISTRAZIONE
+COMMERCIALE
+LOGISTICA
+MAGAZZINO
+PRODUZIONE
+RISORSE UMANE
+SICUREZZA
+VENDITE
