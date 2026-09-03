@@ -47,21 +47,50 @@ from reportlab.platypus import (
 
 # In a PyInstaller one-file build, __file__ points inside a temporary
 # extraction directory. Keep user templates, output and history beside the
-# executable instead.
-APP_DIR = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
-)
+# executable instead. If the executable lives inside a ./release/ subfolder
+# we intentionally use the PARENT folder as the shared workspace so the
+# release EXE, the source launcher and the batch file all share the same
+# reparti.txt, templates/ and output/ with zero duplication.
+def _resolve_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() == "release":
+            return exe_dir.parent
+        return exe_dir
+    return Path(__file__).resolve().parent
+
+
+APP_DIR = _resolve_app_dir()
 DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
 HISTORY_FILE = APP_DIR / ".formazioni_history.json"
+DEPARTMENTS_FILE = APP_DIR / "reparti.txt"
 SUPPORTED_EXTENSIONS = {".docx", ".xlsx"}
 ALL_DEPARTMENT_NAMES = {"TUTTI", "TUTTE", "ALL"}
 FILENAME_PATTERN = re.compile(
     r"^(?P<department>.+)_(?P<count>\d+)_(?P<code>[A-Za-z]{3})$",
     re.IGNORECASE,
 )
+
+
+def load_departments_from_file() -> list[str]:
+    if not DEPARTMENTS_FILE.exists():
+        return []
+    try:
+        raw = DEPARTMENTS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    departments: list[str] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        key = name.upper()
+        if key not in seen:
+            seen.add(key)
+            departments.append(key)
+    return departments
 
 
 @dataclass(frozen=True)
@@ -111,12 +140,23 @@ def discover_templates(folder: Path) -> tuple[list[TemplateFile], list[Path]]:
 
 
 def department_options(templates: list[TemplateFile]) -> list[str]:
-    names = {
+    from_file = load_departments_from_file()
+    from_templates = {
         template.department.upper()
         for template in templates
         if not template.is_for_every_department
     }
-    return sorted(names)
+    merged: list[str] = []
+    seen: set[str] = set()
+    for name in from_file:
+        if name not in seen:
+            seen.add(name)
+            merged.append(name)
+    for name in sorted(from_templates):
+        if name not in seen:
+            seen.add(name)
+            merged.append(name)
+    return merged
 
 
 def templates_for_department(
@@ -475,10 +515,10 @@ class FormazioniApp:
                 "Installa Python con il supporto Tk e riavvia Formazioni PZZ."
             )
         self.root = root
-        self.root.title("Formazioni PZZ")
-        self.root.geometry("1040x760")
-        self.root.minsize(820, 620)
-        self.root.configure(bg="#f4f7f6")
+        self.root.title("Formazioni PZZ — Dossier Formazione")
+        self.root.geometry("1120x800")
+        self.root.minsize(920, 680)
+        self.root.configure(bg="#eef3f3")
 
         self.template_dir = StringVar(value=str(DEFAULT_TEMPLATE_DIR))
         self.output_dir = StringVar(value=str(DEFAULT_OUTPUT_DIR))
@@ -501,99 +541,539 @@ class FormazioniApp:
     def _configure_style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("App.TFrame", background="#f4f7f6")
+
+        style.configure("App.TFrame", background="#eef3f3")
         style.configure("Card.TFrame", background="#ffffff")
-        style.configure("Title.TLabel", background="#173642", foreground="#ffffff", font=("Helvetica", 21, "bold"))
-        style.configure("Subtitle.TLabel", background="#173642", foreground="#cfe0de", font=("Helvetica", 10))
-        style.configure("Section.TLabel", background="#ffffff", foreground="#173642", font=("Helvetica", 12, "bold"))
-        style.configure("Muted.TLabel", background="#ffffff", foreground="#70858b", font=("Helvetica", 9))
-        style.configure("Count.TLabel", background="#eaf4f1", foreground="#247b7b", font=("Helvetica", 9, "bold"))
-        style.configure("Primary.TButton", background="#247b7b", foreground="#ffffff", font=("Helvetica", 10, "bold"), padding=(13, 8))
-        style.map("Primary.TButton", background=[("active", "#1c6262")])
-        style.configure("Secondary.TButton", background="#edf3f2", foreground="#173642", padding=(10, 7))
-        style.configure("TEntry", padding=7)
-        style.configure("TCombobox", padding=6)
+        style.configure("CardBody.TFrame", background="#ffffff")
+        style.configure("Shadow1.TFrame", background="#dce4e5")
+        style.configure("Shadow2.TFrame", background="#e6ecec")
+
+        style.configure(
+            "Title.TLabel",
+            background="#0a2235",
+            foreground="#ffffff",
+            font=("Segoe UI Semibold", 26, "bold"),
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background="#0a2235",
+            foreground="#b7d0d8",
+            font=("Segoe UI", 10),
+        )
+        style.configure(
+            "Eyebrow.TLabel",
+            background="#0a2235",
+            foreground="#d9a13f",
+            font=("Segoe UI", 8, "bold"),
+        )
+
+        style.configure(
+            "Section.TLabel",
+            background="#ffffff",
+            foreground="#0f2a36",
+            font=("Segoe UI Semibold", 13, "bold"),
+        )
+        style.configure(
+            "SectionAccent.TLabel",
+            background="#ffffff",
+            foreground="#d9a13f",
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.configure(
+            "Muted.TLabel",
+            background="#ffffff",
+            foreground="#56707a",
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "AppMuted.TLabel",
+            background="#eef3f3",
+            foreground="#56707a",
+            font=("Segoe UI", 9),
+        )
+
+        style.configure(
+            "FieldLabel.TLabel",
+            background="#ffffff",
+            foreground="#0f2a36",
+            font=("Segoe UI Semibold", 9, "bold"),
+        )
+
+        style.configure(
+            "Count.TLabel",
+            background="#e3f1ee",
+            foreground="#1c6262",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=(12, 6),
+        )
+        style.configure(
+            "Gold.TLabel",
+            background="#fbf0dc",
+            foreground="#a8721c",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=(12, 6),
+        )
+        style.configure(
+            "Secure.TLabel",
+            background="#e3f1ee",
+            foreground="#1c6262",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=(12, 6),
+        )
+
+        style.configure(
+            "Primary.TButton",
+            background="#2a8e8e",
+            foreground="#ffffff",
+            font=("Segoe UI Semibold", 10, "bold"),
+            padding=(18, 11),
+            borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#1d6a6a"), ("pressed", "#154d4d")],
+        )
+
+        style.configure(
+            "Secondary.TButton",
+            background="#eaf0f0",
+            foreground="#0f2a36",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=(14, 9),
+            borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#d5e0e1"), ("pressed", "#c2d2d3")],
+        )
+
+        style.configure(
+            "Accent.TButton",
+            background="#d9a13f",
+            foreground="#2a1a00",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=(14, 9),
+            borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#c08c2d"), ("pressed", "#a4741d")],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground="#ffffff",
+            foreground="#0f2a36",
+            bordercolor="#cfe1e4",
+            lightcolor="#cfe1e4",
+            darkcolor="#cfe1e4",
+            padding=9,
+            focusthickness=2,
+            focuscolor="#2a8e8e",
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+            lightcolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+            darkcolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+        )
+
+        style.configure(
+            "TCombobox",
+            fieldbackground="#ffffff",
+            foreground="#0f2a36",
+            background="#ffffff",
+            arrowcolor="#1c6262",
+            bordercolor="#cfe1e4",
+            lightcolor="#cfe1e4",
+            darkcolor="#cfe1e4",
+            padding=8,
+            focusthickness=2,
+            focuscolor="#2a8e8e",
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "TCombobox",
+            bordercolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+            lightcolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+            darkcolor=[("focus", "#2a8e8e"), ("!focus", "#cfe1e4")],
+            background=[("readonly", "#ffffff"), ("active", "#ffffff")],
+            fieldbackground=[("readonly", "#ffffff")],
+        )
+
+        style.configure(
+            "Treeview",
+            background="#ffffff",
+            fieldbackground="#ffffff",
+            foreground="#0f2a36",
+            rowheight=28,
+            bordercolor="#cfe1e4",
+            borderwidth=1,
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#1c6262",
+            foreground="#ffffff",
+            font=("Segoe UI Semibold", 9, "bold"),
+            padding=9,
+            relief="flat",
+            borderwidth=0,
+        )
+        style.map(
+            "Treeview",
+            background=[
+                ("selected", "#2a8e8e"),
+            ],
+            foreground=[
+                ("selected", "#ffffff"),
+            ],
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#1d6a6a")],
+        )
+
+        style.configure(
+            "Vertical.TScrollbar",
+            background="#cfe1e4",
+            troughcolor="#f2f7f7",
+            bordercolor="#cfe1e4",
+            arrowcolor="#1c6262",
+            arrowsize=14,
+            relief="flat",
+            borderwidth=0,
+            gripcount=0,
+            width=14,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[
+                ("active", "#2a8e8e"),
+                ("disabled", "#e6ecec"),
+            ],
+        )
+
+        style.configure(
+            "TCheckbutton",
+            background="#ffffff",
+            foreground="#0f2a36",
+            font=("Segoe UI Semibold", 9),
+            focusthickness=0,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", "#ffffff")],
+            foreground=[("active", "#0f2a36")],
+        )
+
+    def _draw_gradient(self, canvas, w, h, color1, color2):
+        steps = max(1, h)
+        r1, g1, b1 = canvas.winfo_rgb(color1)
+        r2, g2, b2 = canvas.winfo_rgb(color2)
+        ratio_r = (r2 - r1) / steps
+        ratio_g = (g2 - g1) / steps
+        ratio_b = (b2 - b1) / steps
+        for i in range(steps):
+            nr = int(r1 + ratio_r * i)
+            ng = int(g1 + ratio_g * i)
+            nb = int(b1 + ratio_b * i)
+            color = f"#{nr:04x}{ng:04x}{nb:04x}"
+            canvas.create_line(0, i, w, i, fill=color)
 
     def _build_header(self) -> None:
-        header = tk.Frame(self.root, bg="#173642", padx=28, pady=22)
-        header.pack(fill=X)
-        ttk.Label(header, text="Formazioni PZZ", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            header,
-            text="Dossier di formazione pronti da stampare, partendo dai tuoi template locali.",
-            style="Subtitle.TLabel",
-        ).pack(anchor="w", pady=(4, 0))
+        header_outer = tk.Frame(self.root, bg="#eef3f3", height=160)
+        header_outer.pack(fill=X, side="top")
+        header_outer.pack_propagate(False)
 
-    def _card(self, parent, **kwargs):
-        frame = ttk.Frame(parent, style="Card.TFrame", padding=18, **kwargs)
-        frame.configure()
-        return frame
+        c = tk.Canvas(header_outer, height=148, highlightthickness=0, bd=0, bg="#0a2235")
+        c.pack(fill=X, side="top")
+
+        def paint_header(_evt=None):
+            w = max(c.winfo_width(), 1)
+            c.delete("all")
+            self._draw_gradient(c, w, 148, "#0a2235", "#153a52")
+            c.create_rectangle(0, 146, w, 148, fill="#d9a13f", outline="")
+
+        c.bind("<Configure>", paint_header)
+        c.after(1, paint_header)
+
+        content = tk.Frame(header_outer, bg="#0a2235")
+        content.place(x=42, y=28, relwidth=1.0, width=-84)
+
+        ttk.Label(content, text="FORMAZIONI  ·  PZZ", style="Eyebrow.TLabel").pack(anchor="w")
+        ttk.Label(content, text="Dossier di formazione", style="Title.TLabel").pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            content,
+            text="Crea dossier PDF pronti per la stampa, partendo dai template Word / Excel dei singoli reparti.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(6, 0))
+
+    def _card(self, parent, title=None, subtitle=None, accent=None, **kwargs):
+        shadow1 = tk.Frame(parent, bg="#dce4e5", highlightthickness=0)
+        shadow2 = tk.Frame(shadow1, bg="#e6ecec", padx=1, pady=1)
+        shadow2.pack(fill=BOTH, expand=True, padx=2, pady=2)
+        card = tk.Frame(shadow2, bg="#ffffff", padx=2, pady=2)
+        card.pack(fill=BOTH, expand=True, padx=1, pady=1)
+        inner = tk.Frame(card, bg="#ffffff", padx=26, pady=24)
+        inner.pack(fill=BOTH, expand=True)
+
+        head = tk.Frame(inner, bg="#ffffff")
+        head.pack(fill=X)
+        if title or accent:
+            left = tk.Frame(head, bg="#ffffff")
+            left.pack(side=LEFT, fill=X, expand=True)
+            if accent:
+                ttk.Label(left, text=accent, style="SectionAccent.TLabel").pack(anchor="w")
+            if title:
+                ttk.Label(left, text=title, style="Section.TLabel").pack(anchor="w", pady=(2, 0))
+            tk.Frame(inner, bg="#d9a13f", height=2).pack(fill=X, pady=(16, 22))
+
+        if subtitle:
+            ttk.Label(inner, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
+
+        body = tk.Frame(inner, bg="#ffffff")
+        body.pack(fill=BOTH, expand=True)
+        return shadow1, body
+
+    def _labeled_field(self, parent, label_text, widget_factory, row, col=0, span=2, label_col_width=160, **w_kwargs):
+        lbl = tk.Label(
+            parent,
+            text=label_text,
+            bg="#ffffff",
+            fg="#0f2a36",
+            font=("Segoe UI Semibold", 9, "bold"),
+            anchor="w",
+        )
+        lbl.grid(row=row, column=col, sticky="we", padx=(0, 16), pady=(0, 6))
+        parent.grid_columnconfigure(col, minsize=label_col_width)
+        container = tk.Frame(parent, bg="#ffffff")
+        container.grid(row=row, column=col + 1, sticky="nsew", columnspan=span - 1, pady=(0, 14))
+        container.grid_columnconfigure(0, weight=1)
+        w_kwargs.setdefault("master", container)
+        widget = widget_factory(**w_kwargs)
+        widget.grid(row=0, column=0, sticky="ew")
+        return widget
 
     def _build_body(self) -> None:
-        body = ttk.Frame(self.root, style="App.TFrame", padding=22)
+        body = ttk.Frame(self.root, style="App.TFrame", padding=(30, 6, 30, 10))
         body.pack(fill=BOTH, expand=True)
-        body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
+        body.columnconfigure(0, weight=5)
+        body.columnconfigure(1, weight=4)
         body.rowconfigure(1, weight=1)
 
-        source = self._card(body)
-        source.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        source.columnconfigure(1, weight=1)
-        ttk.Label(source, text="Cartelle locali", style="Section.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(source, text="Template Word / Excel", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(source, textvariable=self.template_dir).grid(row=1, column=1, sticky="ew", padx=10, pady=(12, 0))
-        ttk.Button(source, text="Scegli", style="Secondary.TButton", command=self.choose_template_dir).grid(row=1, column=2, pady=(12, 0))
-        ttk.Label(source, text="Destinazione PDF", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(source, textvariable=self.output_dir).grid(row=2, column=1, sticky="ew", padx=10, pady=(8, 0))
-        ttk.Button(source, text="Scegli", style="Secondary.TButton", command=self.choose_output_dir).grid(row=2, column=2, pady=(8, 0))
-        ttk.Button(source, text="Aggiorna documenti", style="Secondary.TButton", command=self.refresh_templates).grid(row=3, column=1, sticky="w", pady=(12, 0))
+        # ==== CARD 1: SORGENTI ====
+        src_shadow, src_body = self._card(
+            body,
+            title="Cartelle locali",
+            accent="01  ·  CONFIGURAZIONE",
+            subtitle="Indica dove si trovano i template Word / Excel e dove salvare i PDF generati.",
+        )
+        src_shadow.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+        src_body.columnconfigure(1, weight=1)
+        src_body.columnconfigure(2, weight=0)
 
-        form = self._card(body)
-        form.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
-        form.columnconfigure(1, weight=1)
-        ttk.Label(form, text="Nuovo dossier", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(form, text="Nome e cognome *", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(18, 0))
-        ttk.Entry(form, textvariable=self.employee_name).grid(row=1, column=1, sticky="ew", padx=(18, 0), pady=(18, 0))
-        ttk.Label(form, text="Data di ingresso *", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(form, textvariable=self.entry_date).grid(row=2, column=1, sticky="ew", padx=(18, 0), pady=(12, 0))
-        ttk.Label(form, text="Reparto *", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 0))
-        self.department_combo = ttk.Combobox(form, textvariable=self.department, state="readonly")
-        self.department_combo.grid(row=3, column=1, sticky="ew", padx=(18, 0), pady=(12, 0))
-        self.department_combo.bind("<<ComboboxSelected>>", lambda _event: self.update_document_list())
-        ttk.Label(form, text="Ruolo (facoltativo)", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(form, textvariable=self.role).grid(row=4, column=1, sticky="ew", padx=(18, 0), pady=(12, 0))
-        ttk.Label(form, text="Note (facoltative)", style="Muted.TLabel").grid(row=5, column=0, sticky="nw", pady=(12, 0))
-        notes_entry = tk.Text(form, height=4, width=30, font=("Helvetica", 10), relief="solid", borderwidth=1, highlightthickness=0)
-        notes_entry.grid(row=5, column=1, sticky="ew", padx=(18, 0), pady=(12, 0))
+        def add_row(r, label_text, var, btn_cmd):
+            tk.Label(
+                src_body, text=label_text, bg="#ffffff", fg="#0f2a36",
+                font=("Segoe UI Semibold", 9, "bold"), anchor="w",
+            ).grid(row=r, column=0, sticky="we", padx=(0, 18), pady=(0, 4))
+            ent = ttk.Entry(src_body, textvariable=var)
+            ent.grid(row=r, column=1, sticky="ew", padx=(0, 10), pady=(0, 14))
+            ttk.Button(src_body, text="Scegli cartella", style="Secondary.TButton", command=btn_cmd).grid(
+                row=r, column=2, sticky="ew", pady=(0, 14)
+            )
+
+        add_row(0, "Template Word / Excel (.docx, .xlsx)", self.template_dir, self.choose_template_dir)
+        add_row(1, "Destinazione PDF generati", self.output_dir, self.choose_output_dir)
+
+        action_row = tk.Frame(src_body, bg="#ffffff")
+        action_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ttk.Button(
+            action_row,
+            text="⟳  Aggiorna documenti",
+            style="Accent.TButton",
+            command=self.refresh_templates,
+        ).pack(side=LEFT)
+
+        # ==== CARD 2: FORM ====
+        form_shadow, form_body = self._card(
+            body,
+            title="Nuovo dossier",
+            accent="02  ·  ANAGRAFICA",
+            subtitle="Inserisci i dati della persona. I campi con * sono obbligatori.",
+        )
+        form_shadow.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
+        form_body.columnconfigure(1, weight=1)
+
+        self._labeled_field(
+            form_body,
+            "Nome e cognome *",
+            lambda **kw: ttk.Entry(**kw),
+            row=0,
+            textvariable=self.employee_name,
+        )
+        self._labeled_field(
+            form_body,
+            "Data di ingresso *",
+            lambda **kw: ttk.Entry(**kw),
+            row=1,
+            textvariable=self.entry_date,
+        )
+        self.department_combo = self._labeled_field(
+            form_body,
+            "Reparto *",
+            lambda **kw: ttk.Combobox(**kw, state="readonly"),
+            row=2,
+            textvariable=self.department,
+        )
+        self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
+        self._labeled_field(
+            form_body,
+            "Ruolo (facoltativo)",
+            lambda **kw: ttk.Entry(**kw),
+            row=3,
+            textvariable=self.role,
+        )
+
+        tk.Label(
+            form_body,
+            text="Note (facoltative)",
+            bg="#ffffff",
+            fg="#0f2a36",
+            font=("Segoe UI Semibold", 9, "bold"),
+            anchor="w",
+        ).grid(row=4, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
+        notes_wrap = tk.Frame(form_body, bg="#ffffff")
+        notes_wrap.grid(row=4, column=1, sticky="nsew", pady=(0, 14))
+        notes_wrap.grid_columnconfigure(0, weight=1)
+        notes_entry = tk.Text(
+            notes_wrap,
+            height=5,
+            wrap="word",
+            font=("Segoe UI", 10),
+            bg="#ffffff",
+            fg="#0f2a36",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=2,
+            highlightbackground="#cfe1e4",
+            highlightcolor="#2a8e8e",
+            padx=10,
+            pady=9,
+            insertbackground="#2a8e8e",
+        )
+        notes_entry.grid(row=0, column=0, sticky="nsew")
         self.notes_widget = notes_entry
-        ttk.Checkbutton(form, text="Apri la cartella al termine", variable=self.auto_open).grid(row=6, column=1, sticky="w", pady=(13, 0))
-        ttk.Button(form, text="Genera PDF unico", style="Primary.TButton", command=self.generate).grid(row=7, column=1, sticky="ew", pady=(20, 0))
+        sb_notes = ttk.Scrollbar(notes_wrap, orient="vertical", command=notes_entry.yview)
+        sb_notes.grid(row=0, column=1, sticky="ns")
+        notes_entry.configure(yscrollcommand=sb_notes.set)
 
-        preview = self._card(body)
-        preview.grid(row=1, column=1, sticky="nsew")
-        preview.rowconfigure(2, weight=1)
-        preview.columnconfigure(0, weight=1)
-        ttk.Label(preview, text="Documenti inclusi", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(preview, textvariable=self.count_label, style="Count.TLabel", padding=(8, 4)).grid(row=1, column=0, sticky="w", pady=(10, 10))
-        tree_frame = ttk.Frame(preview, style="Card.TFrame")
-        tree_frame.grid(row=2, column=0, sticky="nsew")
-        tree_frame.rowconfigure(0, weight=1)
-        tree_frame.columnconfigure(0, weight=1)
-        self.tree = ttk.Treeview(tree_frame, columns=("documento", "copie"), show="headings", height=14)
-        self.tree.heading("documento", text="Template")
+        form_body.rowconfigure(4, weight=1)
+
+        bottom_form = tk.Frame(form_body, bg="#ffffff")
+        bottom_form.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Checkbutton(
+            bottom_form,
+            text="Apri la cartella di destinazione al termine",
+            variable=self.auto_open,
+        ).pack(side=LEFT)
+        ttk.Button(
+            bottom_form,
+            text="⬇  Genera PDF unico",
+            style="Primary.TButton",
+            command=self.generate,
+        ).pack(side=RIGHT, fill=X, expand=True, padx=(16, 0), ipadx=14)
+
+        # ==== CARD 3: PREVIEW DOCUMENTI ====
+        prev_shadow, prev_body = self._card(
+            body,
+            title="Documenti inclusi",
+            accent="03  ·  RIEPILOGO",
+            subtitle="Seleziona un reparto per vedere quali documenti e quante copie verranno incluse.",
+        )
+        prev_shadow.grid(row=1, column=1, sticky="nsew")
+        prev_body.rowconfigure(2, weight=1)
+        prev_body.columnconfigure(0, weight=1)
+
+        badge_row = tk.Frame(prev_body, bg="#ffffff")
+        badge_row.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        ttk.Label(badge_row, textvariable=self.count_label, style="Count.TLabel").pack(side=LEFT)
+
+        tree_wrap = tk.Frame(prev_body, bg="#ffffff")
+        tree_wrap.grid(row=2, column=0, sticky="nsew")
+        tree_wrap.rowconfigure(0, weight=1)
+        tree_wrap.columnconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(
+            tree_wrap,
+            columns=("documento", "copie"),
+            show="headings",
+            height=16,
+        )
+        self.tree.heading("documento", text="  Template · Reparto")
         self.tree.heading("copie", text="Copie")
-        self.tree.column("documento", width=220, anchor="w")
-        self.tree.column("copie", width=60, anchor="center")
+        self.tree.column("documento", width=320, anchor="w")
+        self.tree.column("copie", width=80, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
-        ttk.Label(preview, text="Il numero nel nome file determina quante copie vengono inserite.", style="Muted.TLabel", wraplength=290).grid(row=3, column=0, sticky="w", pady=(12, 0))
 
-        footer = ttk.Frame(self.root, style="App.TFrame", padding=(22, 0, 22, 14))
-        footer.pack(fill=X)
-        ttk.Label(footer, textvariable=self.status, style="Muted.TLabel").pack(side=LEFT)
-        ttk.Label(footer, text="Tutto resta sul computer", style="Count.TLabel", padding=(8, 4)).pack(side=RIGHT)
+        self.tree.tag_configure("odd", background="#ffffff")
+        self.tree.tag_configure("even", background="#f3faf8")
+        self.tree.tag_configure("tutti", background="#fff8ea")
+
+        help_frame = tk.Frame(prev_body, bg="#ffffff")
+        help_frame.grid(row=3, column=0, sticky="ew", pady=(18, 0))
+        tk.Frame(help_frame, bg="#e3f1ee", width=4, height=44).pack(side=LEFT)
+        tip = tk.Label(
+            help_frame,
+            text=(
+                "Suggerimento: il nome di ogni template determina reparto e copie: \n"
+                "REPARTO_NUMERO_CODICE.docx — es.  SICUREZZA_2_SIC.docx"
+            ),
+            bg="#ffffff",
+            fg="#56707a",
+            font=("Segoe UI", 9),
+            justify="left",
+            anchor="w",
+            padx=12,
+            pady=8,
+            wraplength=320,
+        )
+        tip.pack(side=LEFT, fill=X, expand=True)
+
+        # ==== FOOTER ====
+        footer_outer = tk.Frame(self.root, bg="#eef3f3")
+        footer_outer.pack(fill=X, side="bottom")
+        footer = tk.Frame(footer_outer, bg="#ffffff", padx=24, pady=12)
+        footer.pack(fill=X, padx=30, pady=(0, 16))
+
+        status_wrap = tk.Frame(footer, bg="#ffffff")
+        status_wrap.pack(side=LEFT, fill=X, expand=True)
+        tk.Label(
+            status_wrap,
+            text="●",
+            bg="#ffffff",
+            fg="#2a8e8e",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=LEFT)
+        tk.Label(
+            status_wrap,
+            textvariable=self.status,
+            bg="#ffffff",
+            fg="#0f2a36",
+            font=("Segoe UI Semibold", 9),
+            anchor="w",
+            padx=8,
+        ).pack(side=LEFT, fill=X, expand=True)
+
+        ttk.Label(footer, text="🔒  Tutto resta sul computer · nessun dato inviato in rete", style="Secure.TLabel").pack(side=RIGHT)
 
     def choose_template_dir(self) -> None:
         chosen = filedialog.askdirectory(initialdir=self.template_dir.get(), title="Scegli la cartella dei template")
@@ -630,10 +1110,16 @@ class FormazioniApp:
             self.tree.delete(item)
         selected = templates_for_department(self.templates, self.department.get())
         total = sum(template.copies for template in selected)
-        self.count_label.set(f"{total} documenti · {len(selected)} template")
-        for template in selected:
+        self.count_label.set(f"  {total} DOCUMENTI  ·  {len(selected)} TEMPLATE  ")
+        for idx, template in enumerate(selected):
             scope = "Tutti i reparti" if template.is_for_every_department else template.department.upper()
-            self.tree.insert("", END, values=(f"{scope} · {template.path.name}", template.copies))
+            if template.is_for_every_department:
+                tag = "tutti"
+            elif idx % 2 == 0:
+                tag = "even"
+            else:
+                tag = "odd"
+            self.tree.insert("", END, values=(f"  {scope} · {template.path.name}", template.copies), tags=(tag,))
 
     def generate(self) -> None:
         name = self.employee_name.get().strip()
