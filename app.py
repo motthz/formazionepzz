@@ -65,10 +65,10 @@ DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
 HISTORY_FILE = APP_DIR / ".formazioni_history.json"
 DEPARTMENTS_FILE = APP_DIR / "reparti.txt"
-SUPPORTED_EXTENSIONS = {".docx", ".xlsx"}
+SUPPORTED_EXTENSIONS = {".docx", ".xlsx", ".pdf"}
 ALL_DEPARTMENT_NAMES = {"TUTTI", "TUTTE", "ALL"}
 FILENAME_PATTERN = re.compile(
-    r"^(?P<department>.+)_(?P<count>\d+)_(?P<code>[A-Za-z]{3})$",
+    r"^(?P<department>.+)_(?P<count>\d+)_(?P<code>[A-Za-z]{2,5})$",
     re.IGNORECASE,
 )
 
@@ -401,7 +401,80 @@ def make_styles() -> dict[str, ParagraphStyle]:
             leading=11,
             textColor=colors.HexColor("#71838a"),
         ),
+        "pdf_page": ParagraphStyle(
+            "PdfPage",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=8.5,
+            leading=11.5,
+            textColor=colors.HexColor("#263f47"),
+        ),
     }
+
+
+def pdf_story(
+    path: Path,
+    employee_name: str,
+    entry_date: str,
+    styles: dict[str, ParagraphStyle],
+) -> list[object]:
+    """Include a PDF template as text pages in the dossier.
+
+    We intentionally do NOT try to binary-merge the source PDF into the
+    output because ReportLab's Platypus pipeline builds a single,
+    consistent PDF from scratch (cover page + documents + page numbers are
+    preserved). Instead we:
+      1. Extract any text layer from the source PDF with pypdf
+      2. Substitute *nome* / *data* case-insensitively
+      3. Emit one Platypus subheading per PDF page followed by the text
+    If the source PDF has no extractable text layer we still include a
+    page that references the file name so the dossier is complete.
+    """
+    story: list[object] = []
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        story.append(
+            paragraph_text(
+                "Libreria pypdf non disponibile per leggere il template PDF. Installare con: pip install pypdf",
+                styles["muted"],
+            )
+        )
+        return story
+    try:
+        reader = PdfReader(str(path))
+    except Exception as exc:
+        story.append(paragraph_text(f"Impossibile aprire il PDF: {exc}", styles["muted"]))
+        return story
+    if not reader.pages:
+        story.append(paragraph_text("PDF senza pagine.", styles["muted"]))
+        return story
+    for idx, page in enumerate(reader.pages, start=1):
+        if len(reader.pages) > 1:
+            story.append(Paragraph(f"Pagina {idx} del PDF", styles["subheading"]))
+        raw = ""
+        try:
+            raw = page.extract_text() or ""
+        except Exception:
+            raw = ""
+        raw = replace_placeholders(raw, employee_name, entry_date)
+        lines = [ln.rstrip() for ln in raw.splitlines()]
+        if not any(ln.strip() for ln in lines):
+            story.append(
+                paragraph_text(
+                    "(Nessun testo estraibile dal PDF. Il file è stato comunque incluso nel dossier come riferimento.)",
+                    styles["muted"],
+                )
+            )
+            story.append(Spacer(1, 3 * mm))
+            continue
+        for line in lines:
+            if not line.strip():
+                story.append(Spacer(1, 1.5 * mm))
+                continue
+            story.append(Paragraph(escape(line), styles["pdf_page"]))
+        story.append(Spacer(1, 4 * mm))
+    return story or [paragraph_text("Documento PDF senza contenuto testuale.", styles["muted"])]
 
 
 def build_pdf(
@@ -486,6 +559,8 @@ def build_pdf(
             story.extend(docx_story(template.path, employee_name, entry_date, styles))
         elif template.path.suffix.lower() == ".xlsx":
             story.extend(xlsx_story(template.path, employee_name, entry_date, styles))
+        elif template.path.suffix.lower() == ".pdf":
+            story.extend(pdf_story(template.path, employee_name, entry_date, styles))
     doc.build(story)
     return len(expanded)
 
@@ -516,8 +591,8 @@ class FormazioniApp:
             )
         self.root = root
         self.root.title("Formazioni PZZ — Dossier Formazione")
-        self.root.geometry("1120x800")
-        self.root.minsize(920, 680)
+        self.root.geometry("1120x820")
+        self.root.minsize(980, 720)
         self.root.configure(bg="#eef3f3")
 
         self.template_dir = StringVar(value=str(DEFAULT_TEMPLATE_DIR))
@@ -809,7 +884,7 @@ class FormazioniApp:
         ttk.Label(content, text="Dossier di formazione", style="Title.TLabel").pack(anchor="w", pady=(4, 0))
         ttk.Label(
             content,
-            text="Crea dossier PDF pronti per la stampa, partendo dai template Word / Excel dei singoli reparti.",
+            text="Crea dossier PDF pronti per la stampa, partendo dai template Word / Excel / PDF dei singoli reparti.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -860,7 +935,35 @@ class FormazioniApp:
         return widget
 
     def _build_body(self) -> None:
-        body = ttk.Frame(self.root, style="App.TFrame", padding=(30, 6, 30, 10))
+        outer_wrap = ttk.Frame(self.root, style="App.TFrame")
+        outer_wrap.pack(fill=BOTH, expand=True)
+        outer_wrap.columnconfigure(0, weight=1)
+        outer_wrap.rowconfigure(0, weight=1)
+
+        canvas_wrap = tk.Canvas(outer_wrap, background="#eef3f3", highlightthickness=0, borderwidth=0)
+        canvas_wrap.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(outer_wrap, orient="vertical", command=canvas_wrap.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        canvas_wrap.configure(yscrollcommand=sb.set)
+
+        scrolled = ttk.Frame(canvas_wrap, style="App.TFrame")
+        scrolled_id = canvas_wrap.create_window((0, 0), window=scrolled, anchor="nw")
+
+        def _on_scroll_config(_evt=None):
+            canvas_wrap.configure(scrollregion=canvas_wrap.bbox("all"))
+
+        def _on_canvas_config(evt):
+            canvas_wrap.itemconfigure(scrolled_id, width=evt.width)
+
+        scrolled.bind("<Configure>", _on_scroll_config)
+        canvas_wrap.bind("<Configure>", _on_canvas_config)
+        canvas_wrap.bind_all(
+            "<MouseWheel>",
+            lambda evt: canvas_wrap.yview_scroll(int(-1 * (evt.delta / 120)), "units"),
+            add="+",
+        )
+
+        body = ttk.Frame(scrolled, style="App.TFrame", padding=(30, 6, 30, 10))
         body.pack(fill=BOTH, expand=True)
         body.columnconfigure(0, weight=5)
         body.columnconfigure(1, weight=4)
@@ -871,7 +974,7 @@ class FormazioniApp:
             body,
             title="Cartelle locali",
             accent="01  ·  CONFIGURAZIONE",
-            subtitle="Indica dove si trovano i template Word / Excel e dove salvare i PDF generati.",
+            subtitle="Indica dove si trovano i template Word / Excel / PDF e dove salvare i PDF generati.",
         )
         src_shadow.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
         src_body.columnconfigure(1, weight=1)
@@ -888,7 +991,7 @@ class FormazioniApp:
                 row=r, column=2, sticky="ew", pady=(0, 14)
             )
 
-        add_row(0, "Template Word / Excel (.docx, .xlsx)", self.template_dir, self.choose_template_dir)
+        add_row(0, "Template Word / Excel / PDF (.docx, .xlsx, .pdf)", self.template_dir, self.choose_template_dir)
         add_row(1, "Destinazione PDF generati", self.output_dir, self.choose_output_dir)
 
         action_row = tk.Frame(src_body, bg="#ffffff")
@@ -924,19 +1027,11 @@ class FormazioniApp:
             row=1,
             textvariable=self.entry_date,
         )
-        self.department_combo = self._labeled_field(
-            form_body,
-            "Reparto *",
-            lambda **kw: ttk.Combobox(**kw, state="readonly"),
-            row=2,
-            textvariable=self.department,
-        )
-        self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
         self._labeled_field(
             form_body,
-            "Ruolo (facoltativo)",
+            "Ruolo / Mansione (facoltativo)",
             lambda **kw: ttk.Entry(**kw),
-            row=3,
+            row=2,
             textvariable=self.role,
         )
 
@@ -947,13 +1042,13 @@ class FormazioniApp:
             fg="#0f2a36",
             font=("Segoe UI Semibold", 9, "bold"),
             anchor="w",
-        ).grid(row=4, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
+        ).grid(row=3, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
         notes_wrap = tk.Frame(form_body, bg="#ffffff")
-        notes_wrap.grid(row=4, column=1, sticky="nsew", pady=(0, 14))
+        notes_wrap.grid(row=3, column=1, sticky="nsew", pady=(0, 14))
         notes_wrap.grid_columnconfigure(0, weight=1)
         notes_entry = tk.Text(
             notes_wrap,
-            height=5,
+            height=7,
             wrap="word",
             font=("Segoe UI", 10),
             bg="#ffffff",
@@ -973,47 +1068,71 @@ class FormazioniApp:
         sb_notes.grid(row=0, column=1, sticky="ns")
         notes_entry.configure(yscrollcommand=sb_notes.set)
 
-        form_body.rowconfigure(4, weight=1)
+        form_body.rowconfigure(3, weight=1)
 
         bottom_form = tk.Frame(form_body, bg="#ffffff")
-        bottom_form.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        bottom_form.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Checkbutton(
             bottom_form,
             text="Apri la cartella di destinazione al termine",
             variable=self.auto_open,
         ).pack(side=LEFT)
-        ttk.Button(
-            bottom_form,
-            text="⬇  Genera PDF unico",
-            style="Primary.TButton",
-            command=self.generate,
-        ).pack(side=RIGHT, fill=X, expand=True, padx=(16, 0), ipadx=14)
 
         # ==== CARD 3: PREVIEW DOCUMENTI ====
         prev_shadow, prev_body = self._card(
             body,
             title="Documenti inclusi",
             accent="03  ·  RIEPILOGO",
-            subtitle="Seleziona un reparto per vedere quali documenti e quante copie verranno incluse.",
+            subtitle="Scegli il reparto → vedi l'elenco dei documenti → genera il PDF.",
         )
         prev_shadow.grid(row=1, column=1, sticky="nsew")
-        prev_body.rowconfigure(2, weight=1)
         prev_body.columnconfigure(0, weight=1)
 
+        # --- Reparto selector (PRIMO, sempre visibile) ---
+        dept_frame = tk.Frame(prev_body, bg="#ffffff")
+        dept_frame.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        dept_frame.columnconfigure(1, weight=1)
+        tk.Label(
+            dept_frame,
+            text="Reparto *",
+            bg="#ffffff",
+            fg="#0a2235",
+            font=("Segoe UI Semibold", 9, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 14), pady=(0, 6))
+        self.department_combo = ttk.Combobox(
+            dept_frame,
+            state="readonly",
+            textvariable=self.department,
+            font=("Segoe UI Semibold", 10, "bold"),
+            height=14,
+        )
+        self.department_combo.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
+        tk.Label(
+            dept_frame,
+            text="  La selezione aggiorna l'elenco qui sotto in tempo reale.",
+            bg="#ffffff",
+            fg="#56707a",
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
+
         badge_row = tk.Frame(prev_body, bg="#ffffff")
-        badge_row.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        badge_row.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(badge_row, textvariable=self.count_label, style="Count.TLabel").pack(side=LEFT)
 
         tree_wrap = tk.Frame(prev_body, bg="#ffffff")
-        tree_wrap.grid(row=2, column=0, sticky="nsew")
+        tree_wrap.grid(row=2, column=0, sticky="nsew", pady=(0, 4))
         tree_wrap.rowconfigure(0, weight=1)
         tree_wrap.columnconfigure(0, weight=1)
+        prev_body.rowconfigure(2, weight=1)
 
         self.tree = ttk.Treeview(
             tree_wrap,
             columns=("documento", "copie"),
             show="headings",
-            height=16,
+            height=10,
         )
         self.tree.heading("documento", text="  Template · Reparto")
         self.tree.heading("copie", text="Copie")
@@ -1028,14 +1147,33 @@ class FormazioniApp:
         self.tree.tag_configure("even", background="#f3faf8")
         self.tree.tag_configure("tutti", background="#fff8ea")
 
+        # --- Generate button (PRIMARY, bottom-right card 3, SEMPRE visibile) ---
+        gen_frame = tk.Frame(prev_body, bg="#ffffff")
+        gen_frame.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        ttk.Button(
+            gen_frame,
+            text="⬇  Genera PDF unico",
+            style="Primary.TButton",
+            command=self.generate,
+        ).pack(side=RIGHT, fill=X, expand=True, ipadx=18, ipady=5)
+        tk.Label(
+            gen_frame,
+            text="1 clic → dossier PDF",
+            bg="#ffffff",
+            fg="#56707a",
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(side=LEFT, padx=(4, 0))
+
         help_frame = tk.Frame(prev_body, bg="#ffffff")
-        help_frame.grid(row=3, column=0, sticky="ew", pady=(18, 0))
-        tk.Frame(help_frame, bg="#e3f1ee", width=4, height=44).pack(side=LEFT)
+        help_frame.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        tk.Frame(help_frame, bg="#e3f1ee", width=4, height=56).pack(side=LEFT)
         tip = tk.Label(
             help_frame,
             text=(
-                "Suggerimento: il nome di ogni template determina reparto e copie: \n"
-                "REPARTO_NUMERO_CODICE.docx — es.  SICUREZZA_2_SIC.docx"
+                "Suggerimento: il nome di ogni template determina reparto e numero di copie.\n"
+                "Formato standard:  REPARTO_NUMERO_CODICE.docx  (o .xlsx / .pdf)\n"
+                "Esempio:  SICUREZZA_2_SIC.docx   (2 copie per ogni dipendente)"
             ),
             bg="#ffffff",
             fg="#56707a",
@@ -1044,7 +1182,7 @@ class FormazioniApp:
             anchor="w",
             padx=12,
             pady=8,
-            wraplength=320,
+            wraplength=380,
         )
         tip.pack(side=LEFT, fill=X, expand=True)
 
