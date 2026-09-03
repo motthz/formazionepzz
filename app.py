@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import traceback
 from dataclasses import dataclass
@@ -44,7 +45,14 @@ from reportlab.platypus import (
 )
 
 
-APP_DIR = Path(__file__).resolve().parent
+# In a PyInstaller one-file build, __file__ points inside a temporary
+# extraction directory. Keep user templates, output and history beside the
+# executable instead.
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
 HISTORY_FILE = APP_DIR / ".formazioni_history.json"

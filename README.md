@@ -45,7 +45,3 @@ TUTTI_2_AAA.xlsx
 ## Nota sui formati
 
 La prima versione supporta i formati moderni `.docx` e `.xlsx`. Se hai file `.doc` o `.xls`, salvali prima nei rispettivi formati moderni da Word o Excel.
-
-## Build Windows
-
-Il workflow `.github/workflows/build-windows.yml` ricompila automaticamente l'eseguibile quando cambiano il programma o le sue dipendenze. Il file generato viene salvato in `release/FormazioniPZZ.exe`.
