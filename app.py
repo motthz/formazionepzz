@@ -535,8 +535,8 @@ def build_pdf(
         ),
         Spacer(1, 11 * mm),
         Paragraph(
-            f"Generato il {datetime.now().strftime('%d/%m/%Y alle %H:%M')}. "
-            "Il dossier contiene i documenti applicabili al reparto selezionato.",
+            "Il dossier contiene i documenti applicabili al reparto selezionato "
+            "secondo quanto indicato nei file presenti nella cartella dei template.",
             styles["small"],
         ),
     ]
@@ -544,17 +544,8 @@ def build_pdf(
         story.extend([Spacer(1, 7 * mm), Paragraph("<b>Note</b>", styles["subheading"]), paragraph_text(notes, styles["body"])])
 
     for index, (template, copy_number) in enumerate(expanded):
-        story.extend(
-            [
-                PageBreak(),
-                Paragraph(escape(template.path.stem.replace("_", " ")), styles["heading"]),
-                Paragraph(
-                    f"File: {escape(template.display_name)} · Copia {copy_number} di {template.copies}",
-                    styles["small"],
-                ),
-                Spacer(1, 5 * mm),
-            ]
-        )
+        if index > 0 or notes.strip() or len(card_story) > 0:
+            story.append(PageBreak())
         if template.path.suffix.lower() == ".docx":
             story.extend(docx_story(template.path, employee_name, entry_date, styles))
         elif template.path.suffix.lower() == ".xlsx":
@@ -598,7 +589,7 @@ class FormazioniApp:
         self.template_dir = StringVar(value=str(DEFAULT_TEMPLATE_DIR))
         self.output_dir = StringVar(value=str(DEFAULT_OUTPUT_DIR))
         self.employee_name = StringVar()
-        self.entry_date = StringVar(value=date.today().strftime("%d/%m/%Y"))
+        self.entry_date = StringVar()
         self.department = StringVar()
         self.role = StringVar()
         self.notes = StringVar()
@@ -1277,7 +1268,12 @@ class FormazioniApp:
             messagebox.showwarning("Nessun documento", "Non ci sono template per il reparto selezionato.")
             return
         output_dir = Path(self.output_dir.get()).expanduser()
-        output_path = output_dir / f"dossier_{safe_file_part(name)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        base = output_dir / f"dossier_{safe_file_part(name)}.pdf"
+        output_path = base
+        counter = 2
+        while output_path.exists():
+            output_path = output_dir / f"dossier_{safe_file_part(name)}_{counter}.pdf"
+            counter += 1
         notes = self.notes_widget.get("1.0", END).strip()
         try:
             self.status.set("Creo il PDF…")
@@ -1307,7 +1303,6 @@ class FormazioniApp:
                 "name": name,
                 "department": department,
                 "documents": total,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
         HISTORY_FILE.write_text(json.dumps(history[:20], ensure_ascii=False, indent=2), encoding="utf-8")
