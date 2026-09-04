@@ -477,6 +477,56 @@ def paragraph_text(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(safe or " ", style)
 
 
+TABLE_WIDTH = 174 * mm
+
+
+def _table_widths(values: list[list[str]], available_width: float = TABLE_WIDTH) -> list[float]:
+    """Distribuisce la larghezza evitando colonne vuote o sproporzionate."""
+    column_count = max((len(row) for row in values), default=0)
+    if not column_count:
+        return []
+    lengths = []
+    for column in range(column_count):
+        longest = max(
+            (len(str(row[column]).replace("\n", " ").strip()) for row in values if column < len(row)),
+            default=4,
+        )
+        lengths.append(max(4, min(longest, 36)))
+    minimum = available_width / column_count
+    weights = [max(length, 8) for length in lengths]
+    total = sum(weights)
+    widths = [available_width * weight / total for weight in weights]
+    if any(width < minimum for width in widths):
+        widths = [minimum] * column_count
+    return widths
+
+
+def _table_flowable(rows: list[list[object]], raw_values: list[list[str]]) -> Table:
+    column_count = max((len(row) for row in rows), default=0)
+    rows = [row + [""] * (column_count - len(row)) for row in rows]
+    raw_values = [row + [""] * (column_count - len(row)) for row in raw_values]
+    return Table(
+        rows,
+        colWidths=_table_widths(raw_values),
+        repeatRows=1,
+        splitByRow=1,
+        splitInRow=0,
+        hAlign="LEFT",
+        style=TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e7eef1")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#173642")),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b9c9cf")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        ),
+    )
+
+
 def docx_story(
     path: Path,
     employee_name: str,
@@ -495,31 +545,17 @@ def docx_story(
             story.append(Spacer(1, 2.4 * mm))
     for table_index, table in enumerate(document.tables, start=1):
         rows: list[list[object]] = []
+        raw_rows: list[list[str]] = []
         for row in table.rows:
             values = [cell.text.strip() for cell in row.cells]
             if any(values):
+                while values and not values[-1]:
+                    values.pop()
+                raw_rows.append(values)
                 rows.append([paragraph_text(value, styles["table"]) for value in values])
         if rows:
             story.append(Spacer(1, 2 * mm))
-            story.append(
-                Table(
-                    rows,
-                    repeatRows=1,
-                    hAlign="LEFT",
-                    style=TableStyle(
-                        [
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e7eef1")),
-                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#173642")),
-                            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b9c9cf")),
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                            ("TOPPADDING", (0, 0), (-1, -1), 4),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                        ]
-                    ),
-                )
-            )
+            story.append(_table_flowable(rows, raw_rows))
             story.append(Spacer(1, 4 * mm))
     return story or [paragraph_text("Documento senza contenuto testuale.", styles["muted"])]
 
@@ -535,39 +571,26 @@ def xlsx_story(
     try:
         for sheet in workbook.worksheets:
             rows: list[list[object]] = []
-            for row in sheet.iter_rows():
+            raw_rows: list[list[str]] = []
+            for row in sheet.iter_rows(values_only=True):
                 values = [
-                    replace_placeholders(cell.value, employee_name, entry_date)
-                    for cell in row
+                    replace_placeholders(value, employee_name, entry_date)
+                    for value in row
                 ]
                 if any(value not in (None, "") for value in values):
+                    values = [str(value) if value is not None else "" for value in values]
+                    while values and not values[-1]:
+                        values.pop()
+                    raw_rows.append(values)
                     rows.append(
                         [
-                            paragraph_text(str(value) if value is not None else "", styles["table"])
-                            for value in values
+                            paragraph_text(value, styles["table"]) for value in values
                         ]
                     )
             if rows:
                 story.append(Paragraph(escape(sheet.title), styles["subheading"]))
                 story.append(Spacer(1, 2 * mm))
-                story.append(
-                    Table(
-                        rows,
-                        repeatRows=1,
-                        hAlign="LEFT",
-                        style=TableStyle(
-                            [
-                                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e7eef1")),
-                                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b9c9cf")),
-                                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                            ]
-                        ),
-                    )
-                )
+                story.append(_table_flowable(rows, raw_rows))
                 story.append(Spacer(1, 5 * mm))
     finally:
         workbook.close()
@@ -790,14 +813,7 @@ def build_pdf(
         if template.path.suffix.lower() == ".pdf":
             story.extend(module_story)
         else:
-            story.append(
-                KeepInFrame(
-                    174 * mm,
-                    263 * mm,
-                    module_story,
-                    mode="shrink",
-                )
-            )
+            story.extend(module_story)
     doc.build(story)
     return len(expanded)
 
