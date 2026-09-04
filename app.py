@@ -770,7 +770,11 @@ def build_pdf(
         for template in templates
         for copy_number in range(1, template.copies + 1)
     ]
-    if _office_command() and any(template.path.suffix.lower() != ".pdf" for template, _ in expanded):
+    needs_legacy_office = any(
+        template.path.suffix.lower() in {".doc", ".xls"}
+        for template, _ in expanded
+    )
+    if _office_command() and needs_legacy_office:
         return _build_pdf_native(
             output_path,
             employee_name,
