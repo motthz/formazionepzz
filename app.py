@@ -310,6 +310,7 @@ def _prepare_office_template(
     entry_date: str,
 ) -> Path:
     suffix = template.suffix.lower()
+    work_dir.mkdir(parents=True, exist_ok=True)
     if suffix in {".doc", ".xls"}:
         modern_extension = "docx" if suffix == ".doc" else "xlsx"
         source = _convert_with_office(template, work_dir, modern_extension)
@@ -408,17 +409,22 @@ def _build_pdf_native(
         cover.build(cover_story)
 
         pages = [cover_path]
+        prepared_pdfs: dict[Path, Path] = {}
         for index, (template, _copy_number) in enumerate(expanded):
             if template.path.suffix.lower() == ".pdf":
                 pages.append(template.path)
                 continue
-            prepared = _prepare_office_template(
-                template.path,
-                temp_dir / f"template-{index}",
-                employee_name,
-                entry_date,
-            )
-            pages.append(_convert_with_office(prepared, prepared.parent, "pdf"))
+            if template.path not in prepared_pdfs:
+                prepared = _prepare_office_template(
+                    template.path,
+                    temp_dir / f"template-{index}",
+                    employee_name,
+                    entry_date,
+                )
+                prepared_pdfs[template.path] = _convert_with_office(
+                    prepared, prepared.parent, "pdf"
+                )
+            pages.append(prepared_pdfs[template.path])
         _merge_pdfs(output_path, pages)
     return len(expanded)
 
@@ -761,12 +767,14 @@ def build_pdf(
     for index, (template, copy_number) in enumerate(expanded):
         if index > 0 or notes.strip() or expanded:
             story.append(PageBreak())
+        module_story: list[object] = []
         if template.path.suffix.lower() == ".docx":
-            story.extend(docx_story(template.path, employee_name, entry_date, styles))
+            module_story = docx_story(template.path, employee_name, entry_date, styles)
         elif template.path.suffix.lower() == ".xlsx":
-            story.extend(xlsx_story(template.path, employee_name, entry_date, styles))
+            module_story = xlsx_story(template.path, employee_name, entry_date, styles)
         elif template.path.suffix.lower() == ".pdf":
-            story.extend(pdf_story(template.path, employee_name, entry_date, styles))
+            module_story = pdf_story(template.path, employee_name, entry_date, styles)
+        story.append(KeepTogether(module_story))
     doc.build(story)
     return len(expanded)
 
