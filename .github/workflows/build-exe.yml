@@ -3,12 +3,6 @@ name: Build Windows EXE
 on:
   push:
     branches: [main]
-    paths:
-      - 'app.py'
-      - 'launcher.py'
-      - 'FormazioniPZZ.spec'
-      - 'requirements.txt'
-      - '.github/workflows/build-exe.yml'
   workflow_dispatch:
 
 jobs:
