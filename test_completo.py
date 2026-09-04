@@ -117,7 +117,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
         t2 = app.parse_template(Path("TUTTI_1_ZZZ.xlsx"))
         check("Parse TUTTI xlsx", t2 is not None and t2.is_for_every_department)
         t3 = app.parse_template(Path("formazione.pdf"))
-        check("Estensione non supportata = None", t3 is None)
+        check("Estensione PDF supportata", t3 is None)
+        check("Parse Word legacy", app.parse_template(Path("SICUREZZA_1_ABC.doc")) is not None)
+        check("Parse Excel legacy", app.parse_template(Path("SICUREZZA_1_ABC.xls")) is not None)
         t4 = app.parse_template(Path("nome_sbagliato.docx"))
         check("Pattern non valido = None", t4 is None)
         t5 = app.parse_template(Path("RISORSE UMANE_3_DEF.docx"))
@@ -146,10 +148,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
     try:
         valid, ignored = app.discover_templates(TEMPLATES_DIR)
         check("5 template validi", len(valid) == 5, f"trovati {len(valid)}")
-        check("1 file ignorato (estensione supportata ma pattern errato)", len(ignored) == 1, f"trovati {len(ignored)}: {[p.name for p in ignored]}")
+        check("2 file ignorati (estensioni supportate ma pattern errato)", len(ignored) == 2, f"trovati {len(ignored)}: {[p.name for p in ignored]}")
         check("README.md escluso dalla scansione", not any(str(p).endswith("README.md") for p in ignored))
-        check(".doc non supportato: non in valid ne' in ignored (scartato prima)",
-              not any(str(p).endswith(".doc") for p in valid + ignored))
+        check(".doc riconosciuto come estensione supportata", any(str(p).endswith(".doc") for p in ignored))
     except Exception as e:
         check("discover_templates", False, str(e))
 
