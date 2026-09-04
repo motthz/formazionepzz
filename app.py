@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -410,8 +411,8 @@ def _merge_pdfs(output_path: Path, pdf_paths: list[Path]) -> None:
         writer.write(handle)
 
 
-def _fit_pdf_to_one_page(pdf_path: Path) -> Path:
-    """Rimuove le pagine vuote aggiunte da alcuni export Office."""
+def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
+    """Rimuove solo le pagine vuote finali aggiunte da alcuni export Office."""
     from pypdf import PdfReader, PdfWriter
 
     reader = PdfReader(str(pdf_path))
@@ -433,35 +434,11 @@ def _fit_pdf_to_one_page(pdf_path: Path) -> Path:
         return pdf_path
 
     trimmed = pdf_path.with_name(f"{pdf_path.stem}-trimmed.pdf")
-    from reportlab.pdfgen.canvas import Canvas
-
-    page_width, page_height = A4
-    source_width = float(pages[0].mediabox.width)
-    source_height = float(pages[0].mediabox.height)
-    scale = min(page_width / source_width, page_height / (source_height * len(pages)))
-    canvas_path = pdf_path.with_name(f"{pdf_path.stem}-one-page.pdf")
-    canvas = Canvas(str(canvas_path), pagesize=A4)
     writer = PdfWriter()
-    for page_index, page in enumerate(pages):
-        canvas.showPage() if page_index else None
-        canvas.saveState()
-        canvas.translate((page_width - source_width * scale) / 2, page_height - (page_index + 1) * source_height * scale)
-        canvas.scale(scale, scale)
-        canvas.restoreState()
-    canvas.save()
-    one_page = PdfReader(str(canvas_path)).pages[0]
-    for page_index, page in enumerate(pages):
-        one_page.merge_transformed_page(
-            page,
-            __import__("pypdf").Transformation().scale(scale).translate(
-                tx=(page_width - source_width * scale) / 2,
-                ty=page_height - (page_index + 1) * source_height * scale,
-            ),
-        )
-    writer.add_page(one_page)
+    for page in pages:
+        writer.add_page(page)
     with trimmed.open("wb") as handle:
         writer.write(handle)
-    canvas_path.unlink(missing_ok=True)
     return trimmed
 
 
@@ -486,9 +463,9 @@ def _build_pdf_native(
             list(prepared.values()), temp_dir / "converted", "pdf"
         )
         pages = [
-            _fit_pdf_to_one_page(template.path)
+            _remove_trailing_blank_pages(template.path)
             if template.path.suffix.lower() == ".pdf"
-            else _fit_pdf_to_one_page(converted[prepared[template.path]])
+            else _remove_trailing_blank_pages(converted[prepared[template.path]])
             for template, _copy_number in expanded
         ]
         _merge_pdfs(output_path, pages)
@@ -727,8 +704,9 @@ def pdf_story(
         story.append(paragraph_text("PDF senza pagine.", styles["muted"]))
         return story
     for idx, page in enumerate(reader.pages, start=1):
+        page_story: list[object] = []
         if len(reader.pages) > 1:
-            story.append(Paragraph(f"Pagina {idx} del PDF", styles["subheading"]))
+            page_story.append(Paragraph(f"Pagina {idx} del PDF", styles["subheading"]))
         raw = ""
         try:
             raw = page.extract_text() or ""
@@ -737,20 +715,23 @@ def pdf_story(
         raw = replace_placeholders(raw, employee_name, entry_date)
         lines = [ln.rstrip() for ln in raw.splitlines()]
         if not any(ln.strip() for ln in lines):
-            story.append(
+            page_story.append(
                 paragraph_text(
                     "(Nessun testo estraibile dal PDF. Il file è stato comunque incluso nel dossier come riferimento.)",
                     styles["muted"],
                 )
             )
-            story.append(Spacer(1, 3 * mm))
-            continue
-        for line in lines:
-            if not line.strip():
-                story.append(Spacer(1, 1.5 * mm))
-                continue
-            story.append(Paragraph(escape(line), styles["pdf_page"]))
-        story.append(Spacer(1, 4 * mm))
+            page_story.append(Spacer(1, 3 * mm))
+        else:
+            for line in lines:
+                if not line.strip():
+                    page_story.append(Spacer(1, 1.5 * mm))
+                    continue
+                page_story.append(Paragraph(escape(line), styles["pdf_page"]))
+            page_story.append(Spacer(1, 4 * mm))
+        story.append(KeepInFrame(174 * mm, 263 * mm, page_story, mode="shrink"))
+        if idx < len(reader.pages):
+            story.append(PageBreak())
     return story or [paragraph_text("Documento PDF senza contenuto testuale.", styles["muted"])]
 
 
@@ -806,14 +787,17 @@ def build_pdf(
             module_story = xlsx_story(template.path, employee_name, entry_date, styles)
         elif template.path.suffix.lower() == ".pdf":
             module_story = pdf_story(template.path, employee_name, entry_date, styles)
-        story.append(
-            KeepInFrame(
-                174 * mm,
-                263 * mm,
-                module_story,
-                mode="shrink",
+        if template.path.suffix.lower() == ".pdf":
+            story.extend(module_story)
+        else:
+            story.append(
+                KeepInFrame(
+                    174 * mm,
+                    263 * mm,
+                    module_story,
+                    mode="shrink",
+                )
             )
-        )
     doc.build(story)
     return len(expanded)
 
