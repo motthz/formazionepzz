@@ -32,6 +32,7 @@ import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
+from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -137,6 +138,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
                        ["Documento generale per *nome*"])
     create_sample_docx(TEMPLATES_DIR / "PRODUZIONE_3_PRO.docx",
                        ["Istruzioni produzione per *nome* del *data*"])
+    from reportlab.pdfgen.canvas import Canvas
+    from reportlab.lib.pagesizes import A4, landscape
+    horizontal_pdf = TEMPLATES_DIR / "ORIZZONTALE_1_ORI.pdf"
+    horizontal_canvas = Canvas(str(horizontal_pdf), pagesize=landscape(A4))
+    for page_number in range(2):
+        horizontal_canvas.drawString(40, 540, f"Pagina orizzontale {page_number + 1}")
+        horizontal_canvas.showPage()
+    horizontal_canvas.save()
 
     # File non validi (devono essere ignorati)
     (TEMPLATES_DIR / "README.md").write_text("ignore")
@@ -147,7 +156,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     heading("FA-003 — Scoperta template nella cartella")
     try:
         valid, ignored = app.discover_templates(TEMPLATES_DIR)
-        check("5 template validi", len(valid) == 5, f"trovati {len(valid)}")
+        check("6 template validi", len(valid) == 6, f"trovati {len(valid)}")
         check("2 file ignorati (estensioni supportate ma pattern errato)", len(ignored) == 2, f"trovati {len(ignored)}: {[p.name for p in ignored]}")
         check("README.md escluso dalla scansione", not any(str(p).endswith("README.md") for p in ignored))
         check(".doc riconosciuto come estensione supportata", any(str(p).endswith(".doc") for p in ignored))
@@ -259,6 +268,28 @@ with tempfile.TemporaryDirectory() as tmpdir:
     except Exception as e:
         check("build_pdf", False, f"{e}\n{traceback.format_exc()}")
 
+    heading("FA-011b — PDF orizzontale: pagine e orientamento conservati")
+    try:
+        horizontal_output = OUTPUT_DIR / "horizontal.pdf"
+        horizontal_template = [t for t in valid if t.path == horizontal_pdf][0]
+        app.build_pdf(
+            horizontal_output,
+            "Franco Neri",
+            "03/09/2026",
+            "SICUREZZA",
+            "Operaio",
+            "",
+            [horizontal_template],
+        )
+        horizontal_reader = PdfReader(str(horizontal_output))
+        check("Numero pagine orizzontali conservato", len(horizontal_reader.pages) == 2)
+        check(
+            "Orientamento orizzontale conservato",
+            all(page.mediabox.width > page.mediabox.height for page in horizontal_reader.pages),
+        )
+    except Exception as e:
+        check("PDF orizzontale", False, f"{e}\n{traceback.format_exc()}")
+
     # === FA-012: Template TUTTI in ogni reparto ===
     heading("FA-012 — Template TUTTI presente in ogni reparto")
     try:
@@ -323,7 +354,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     try:
         # Step 1: scopri template (simula click "Aggiorna documenti")
         templates, ignored = app.discover_templates(TEMPLATES_DIR)
-        check("[Step 1] Template caricati", len(templates) == 5)
+        check("[Step 1] Template caricati", len(templates) == 6)
 
         # Step 2: reparti disponibili (lettura da reparti.txt)
         reparti = app.department_options(templates)
