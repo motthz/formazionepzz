@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+_lang_files = [
+    (os.path.join('lang', f), os.path.join('lang'))
+    for f in os.listdir('lang') if f.lower().endswith('.json')
+] if os.path.isdir('lang') else []
+
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=_lang_files,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
