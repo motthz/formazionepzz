@@ -342,6 +342,36 @@ def _merge_pdfs(output_path: Path, pdf_paths: list[Path]) -> None:
         writer.write(handle)
 
 
+def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
+    """Rimuove le pagine vuote aggiunte da alcuni export Office."""
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(str(pdf_path))
+    last_page = len(reader.pages)
+    while last_page > 1:
+        page = reader.pages[last_page - 1]
+        text = page.extract_text() or ""
+        resources = page.get("/Resources")
+        if resources is not None:
+            resources = resources.get_object()
+        has_images = bool(resources and resources.get("/XObject"))
+        content = page.get_contents()
+        has_drawing_commands = bool(content and content.get_data().strip())
+        if text.strip() or has_images or has_drawing_commands:
+            break
+        last_page -= 1
+    if last_page == len(reader.pages):
+        return pdf_path
+
+    trimmed = pdf_path.with_name(f"{pdf_path.stem}-trimmed.pdf")
+    writer = PdfWriter()
+    for page in reader.pages[:last_page]:
+        writer.add_page(page)
+    with trimmed.open("wb") as handle:
+        writer.write(handle)
+    return trimmed
+
+
 def _build_pdf_native(
     output_path: Path,
     employee_name: str,
@@ -421,9 +451,8 @@ def _build_pdf_native(
                     employee_name,
                     entry_date,
                 )
-                prepared_pdfs[template.path] = _convert_with_office(
-                    prepared, prepared.parent, "pdf"
-                )
+                converted = _convert_with_office(prepared, prepared.parent, "pdf")
+                prepared_pdfs[template.path] = _remove_trailing_blank_pages(converted)
             pages.append(prepared_pdfs[template.path])
         _merge_pdfs(output_path, pages)
     return len(expanded)
