@@ -462,14 +462,27 @@ def _build_pdf_native(
     with tempfile.TemporaryDirectory(prefix="formazioni-pdf-") as temp_name:
         temp_dir = Path(temp_name)
         prepared: dict[Path, Path] = {}
-        for index, (template, _copy_number) in enumerate(expanded):
+        
+        # Batch all unique templates for conversion in one pass
+        unique_templates = {}
+        for index, (template, _) in enumerate(expanded):
             if template.path.suffix.lower() != ".pdf" and template.path not in prepared:
-                prepared[template.path] = _prepare_office_template(
-                    template.path, temp_dir / f"template-{index}", employee_name, entry_date
-                )
-        converted = _convert_with_office_batch(
-            list(prepared.values()), temp_dir / "converted", "pdf"
-        )
+                unique_templates[template.path] = index
+        
+        # Prepare all office templates
+        for template_path, index in unique_templates.items():
+            prepared[template_path] = _prepare_office_template(
+                template_path, temp_dir / f"template-{index}", employee_name, entry_date
+            )
+        
+        # Convert all prepared templates in one batch
+        if prepared:
+            converted = _convert_with_office_batch(
+                list(prepared.values()), temp_dir / "converted", "pdf"
+            )
+        else:
+            converted = {}
+        
         pages = [
             _remove_trailing_blank_pages(template.path)
             if template.path.suffix.lower() == ".pdf"
@@ -719,12 +732,13 @@ def pdf_story(
     """
     story: list[object] = []
     pdf_style = styles["pdf_page"]
-    if frame_width > frame_height:
+    is_landscape = frame_width > frame_height
+    if is_landscape:
         pdf_style = ParagraphStyle(
             "PdfPageLandscape",
             parent=styles["pdf_page"],
-            fontSize=8,
-            leading=10.5,
+            fontSize=7.5,
+            leading=10,
         )
     try:
         from pypdf import PdfReader
@@ -813,15 +827,20 @@ def build_pdf(
     )
     page_size = landscape(A4) if has_landscape_pdf else A4
     page_width, page_height = page_size
-    horizontal_frame = min(page_width - 28 * mm, 263 * mm)
-    vertical_frame = min(page_height - 28 * mm, 174 * mm)
+    horizontal_frame = min(page_width - 28 * mm, 210 * mm)  # Reduced from 263mm for landscape
+    vertical_frame = min(page_height - 28 * mm, 139 * mm)  # Reduced from 174mm for landscape
+    
+    # Reduce margins for landscape to fit better
+    h_margin = 10 * mm if has_landscape_pdf else 14 * mm
+    v_margin = 10 * mm if has_landscape_pdf else 14 * mm
+    
     doc = SimpleDocTemplate(
         str(output_path),
         pagesize=page_size,
-        rightMargin=14 * mm,
-        leftMargin=14 * mm,
-        topMargin=14 * mm,
-        bottomMargin=14 * mm,
+        rightMargin=h_margin,
+        leftMargin=h_margin,
+        topMargin=v_margin,
+        bottomMargin=v_margin,
         title=f"Dossier formazione - {employee_name}",
         author="Formazioni PZZ",
     )
@@ -851,7 +870,11 @@ def build_pdf(
                     horizontal_frame,
                     vertical_frame,
                 )
-        story.extend(deepcopy(story_cache.get(template.path, [])))
+        cached = story_cache.get(template.path, [])
+        if len(cached) > 3 or isinstance(cached[0] if cached else None, Table):
+            story.extend(deepcopy(cached))
+        else:
+            story.extend(cached)
     doc.build(story)
     return len(expanded)
 
