@@ -29,12 +29,23 @@ jobs:
         run: |
           python -m PyInstaller --clean FormazioniPZZ.spec
       
-      - name: Copy to release folder
+      - name: Find and copy executable
+        shell: pwsh
         run: |
+          $exe = Get-ChildItem -Path "dist" -Recurse -Name "FormazioniPZZ.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $exe) {
+            Write-Error "FormazioniPZZ.exe not found in dist folder"
+            Get-ChildItem -Path "dist" -Recurse
+            exit 1
+          }
+          $source = Join-Path "dist" $exe
+          Write-Host "Found exe at: $source"
+          
           if (Test-Path "release\FormazioniPZZ.exe") {
             Remove-Item "release\FormazioniPZZ.exe"
           }
-          Copy-Item "dist\FormazioniPZZ\FormazioniPZZ.exe" -Destination "release\"
+          Copy-Item $source -Destination "release\FormazioniPZZ.exe"
+          Write-Host "Copied to release/FormazioniPZZ.exe"
           Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "dist" -ErrorAction SilentlyContinue
       
