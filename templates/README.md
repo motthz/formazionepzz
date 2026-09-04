@@ -7,8 +7,8 @@ Inserisci qui i documenti Word o Excel che vuoi includere nei dossier.
 Il nome deve seguire questo formato:
 
 ```text
-REPARTO_NUMERO_CODICE.docx
-REPARTO_NUMERO_CODICE.xlsx
+REPARTO_NUMERO_CODICE.doc (o .docx)
+REPARTO_NUMERO_CODICE.xls (o .xlsx)
 ```
 
 Esempi:

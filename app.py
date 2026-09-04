@@ -65,7 +65,7 @@ DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
 HISTORY_FILE = APP_DIR / ".formazioni_history.json"
 DEPARTMENTS_FILE = APP_DIR / "reparti.txt"
-SUPPORTED_EXTENSIONS = {".docx", ".xlsx", ".pdf"}
+SUPPORTED_EXTENSIONS = {".doc", ".docx", ".xls", ".xlsx", ".pdf"}
 ALL_DEPARTMENT_NAMES = {"TUTTI", "TUTTE", "ALL"}
 FILENAME_PATTERN = re.compile(
     r"^(?P<department>.+)_(?P<count>\d+)_(?P<code>[A-Za-z]{2,5})$",
@@ -188,6 +188,10 @@ def replace_placeholders(value: object, employee_name: str, entry_date: str) -> 
 
 def replace_paragraph(paragraph, employee_name: str, entry_date: str) -> None:
     original = paragraph.text
+    for run in paragraph.runs:
+        run.text = str(replace_placeholders(run.text, employee_name, entry_date))
+    if paragraph.text != original:
+        return
     replaced = replace_placeholders(original, employee_name, entry_date)
     if original == replaced:
         return
@@ -216,6 +220,207 @@ def replace_docx_placeholders(document: Document, employee_name: str, entry_date
                     for cell in row.cells:
                         for paragraph in cell.paragraphs:
                             replace_paragraph(paragraph, employee_name, entry_date)
+
+
+def replace_xlsx_placeholders(workbook, employee_name: str, entry_date: str) -> None:
+    for sheet in workbook.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                cell.value = replace_placeholders(cell.value, employee_name, entry_date)
+
+
+def _office_command() -> str | None:
+    for command in ("libreoffice", "soffice"):
+        if shutil.which(command):
+            return command
+    if os.name == "nt":
+        try:
+            import win32com.client  # type: ignore[import-not-found]
+        except ImportError:
+            return None
+        return "microsoft-office"
+    return None
+
+
+def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path:
+    command = _office_command()
+    if command is None:
+        raise RuntimeError(
+            "Per mantenere identico il layout dei template Word/Excel serve "
+            "LibreOffice installato e disponibile nel PATH."
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    converted = output_dir / f"{source.stem}.{extension}"
+    if command == "microsoft-office":
+        import win32com.client  # type: ignore[import-not-found]
+
+        if source.suffix.lower() in {".doc", ".docx"}:
+            word = win32com.client.DispatchEx("Word.Application")
+            document = word.Documents.Open(str(source.resolve()))
+            try:
+                if extension == "pdf":
+                    document.ExportAsFixedFormat(str(converted.resolve()), 17)
+                else:
+                    document.SaveAs2(str(converted.resolve()), FileFormat=16)
+            finally:
+                document.Close(False)
+                word.Quit()
+        else:
+            excel = win32com.client.DispatchEx("Excel.Application")
+            workbook = excel.Workbooks.Open(str(source.resolve()))
+            try:
+                if extension == "pdf":
+                    workbook.ExportAsFixedFormat(0, str(converted.resolve()))
+                else:
+                    workbook.SaveAs(str(converted.resolve()), FileFormat=51)
+            finally:
+                workbook.Close(False)
+                excel.Quit()
+        if not converted.exists():
+            raise RuntimeError(f"Conversione Microsoft Office fallita per {source.name}")
+        return converted
+
+    profile = output_dir / "office-profile"
+    profile_uri = profile.resolve().as_uri()
+    result = subprocess.run(
+        [
+            command,
+            "--headless",
+            "--convert-to",
+            extension,
+            "--outdir",
+            str(output_dir),
+            f"-env:UserInstallation={profile_uri}",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not converted.exists():
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"Conversione Office fallita per {source.name}: {detail}")
+    return converted
+
+
+def _prepare_office_template(
+    template: Path,
+    work_dir: Path,
+    employee_name: str,
+    entry_date: str,
+) -> Path:
+    suffix = template.suffix.lower()
+    if suffix in {".doc", ".xls"}:
+        modern_extension = "docx" if suffix == ".doc" else "xlsx"
+        source = _convert_with_office(template, work_dir, modern_extension)
+    else:
+        source = work_dir / template.name
+        shutil.copy2(template, source)
+
+    if source.suffix.lower() == ".docx":
+        document = Document(str(source))
+        replace_docx_placeholders(document, employee_name, entry_date)
+        document.save(str(source))
+    elif source.suffix.lower() == ".xlsx":
+        workbook = load_workbook(source, data_only=False, read_only=False)
+        try:
+            replace_xlsx_placeholders(workbook, employee_name, entry_date)
+            workbook.save(source)
+        finally:
+            workbook.close()
+    return source
+
+
+def _merge_pdfs(output_path: Path, pdf_paths: list[Path]) -> None:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for pdf_path in pdf_paths:
+        writer.append(str(pdf_path))
+    with output_path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _build_pdf_native(
+    output_path: Path,
+    employee_name: str,
+    entry_date: str,
+    department: str,
+    role: str,
+    notes: str,
+    expanded: list[tuple[TemplateFile, int]],
+) -> int:
+    styles = make_styles()
+    with tempfile.TemporaryDirectory(prefix="formazioni-pdf-") as temp_name:
+        temp_dir = Path(temp_name)
+        cover_path = temp_dir / "cover.pdf"
+        cover = SimpleDocTemplate(
+            str(cover_path),
+            pagesize=A4,
+            rightMargin=18 * mm,
+            leftMargin=18 * mm,
+            topMargin=17 * mm,
+            bottomMargin=17 * mm,
+            title=f"Dossier formazione - {employee_name}",
+            author="Formazioni PZZ",
+        )
+        cover_story: list[object] = [
+            Spacer(1, 17 * mm),
+            Paragraph("Formazioni PZZ", styles["cover_title"]),
+            Paragraph("Dossier di inserimento del personale", styles["cover_subtitle"]),
+            Spacer(1, 13 * mm),
+            HRFlowable(width="70%", thickness=1, color=colors.HexColor("#e4a24c"), hAlign="CENTER"),
+            Spacer(1, 13 * mm),
+            Table(
+                [
+                    [Paragraph("<b>Nome</b>", styles["meta"]), paragraph_text(employee_name, styles["meta"])],
+                    [Paragraph("<b>Data di ingresso</b>", styles["meta"]), paragraph_text(entry_date, styles["meta"])],
+                    [Paragraph("<b>Reparto</b>", styles["meta"]), paragraph_text(department, styles["meta"])],
+                    [Paragraph("<b>Ruolo</b>", styles["meta"]), paragraph_text(role or "-", styles["meta"])],
+                    [Paragraph("<b>Documenti</b>", styles["meta"]), paragraph_text(str(len(expanded)), styles["meta"])],
+                ],
+                colWidths=[44 * mm, 100 * mm],
+                hAlign="CENTER",
+                style=TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f1f6f5")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#b9c9cf")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6e1e3")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ]),
+            ),
+            Spacer(1, 11 * mm),
+            Paragraph(
+                "Il dossier contiene i documenti applicabili al reparto selezionato "
+                "secondo quanto indicato nei file presenti nella cartella dei template.",
+                styles["small"],
+            ),
+        ]
+        if notes.strip():
+            cover_story.extend([
+                Spacer(1, 7 * mm),
+                Paragraph("<b>Note</b>", styles["subheading"]),
+                paragraph_text(notes, styles["body"]),
+            ])
+        cover.build(cover_story)
+
+        pages = [cover_path]
+        for index, (template, _copy_number) in enumerate(expanded):
+            if template.path.suffix.lower() == ".pdf":
+                pages.append(template.path)
+                continue
+            prepared = _prepare_office_template(
+                template.path,
+                temp_dir / f"template-{index}",
+                employee_name,
+                entry_date,
+            )
+            pages.append(_convert_with_office(prepared, prepared.parent, "pdf"))
+        _merge_pdfs(output_path, pages)
+    return len(expanded)
 
 
 def paragraph_text(text: str, style: ParagraphStyle) -> Paragraph:
@@ -493,6 +698,16 @@ def build_pdf(
         for template in templates
         for copy_number in range(1, template.copies + 1)
     ]
+    if _office_command() and any(template.path.suffix.lower() != ".pdf" for template, _ in expanded):
+        return _build_pdf_native(
+            output_path,
+            employee_name,
+            entry_date,
+            department,
+            role,
+            notes,
+            expanded,
+        )
     doc = SimpleDocTemplate(
         str(output_path),
         pagesize=A4,
@@ -544,7 +759,7 @@ def build_pdf(
         story.extend([Spacer(1, 7 * mm), Paragraph("<b>Note</b>", styles["subheading"]), paragraph_text(notes, styles["body"])])
 
     for index, (template, copy_number) in enumerate(expanded):
-        if index > 0 or notes.strip() or len(card_story) > 0:
+        if index > 0 or notes.strip() or expanded:
             story.append(PageBreak())
         if template.path.suffix.lower() == ".docx":
             story.extend(docx_story(template.path, employee_name, entry_date, styles))
@@ -982,7 +1197,7 @@ class FormazioniApp:
                 row=r, column=2, sticky="ew", pady=(0, 14)
             )
 
-        add_row(0, "Template Word / Excel / PDF (.docx, .xlsx, .pdf)", self.template_dir, self.choose_template_dir)
+        add_row(0, "Template Word / Excel / PDF (.doc/.docx, .xls/.xlsx, .pdf)", self.template_dir, self.choose_template_dir)
         add_row(1, "Destinazione PDF generati", self.output_dir, self.choose_output_dir)
 
         action_row = tk.Frame(src_body, bg="#ffffff")
@@ -1163,7 +1378,7 @@ class FormazioniApp:
             help_frame,
             text=(
                 "Suggerimento: il nome di ogni template determina reparto e numero di copie.\n"
-                "Formato standard:  REPARTO_NUMERO_CODICE.docx  (o .xlsx / .pdf)\n"
+                "Formato:  REPARTO_NUMERO_CODICE.doc/.docx  (o .xls/.xlsx / .pdf)\n"
                 "Esempio:  SICUREZZA_2_SIC.docx   (2 copie per ogni dipendente)"
             ),
             bg="#ffffff",

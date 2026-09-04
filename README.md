@@ -24,13 +24,13 @@ L'avvio da sorgente crea automaticamente un ambiente `.venv` locale e installa l
 
 ## Template
 
-Inserisci i file Word `.docx` o Excel `.xlsx` nella cartella `templates`.
+Inserisci i file Word `.doc` / `.docx` o Excel `.xls` / `.xlsx` nella cartella `templates`.
 
 Il nome deve essere:
 
 ```text
-REPARTO_NUMERO_CODICE.docx
-REPARTO_NUMERO_CODICE.xlsx
+REPARTO_NUMERO_CODICE.doc (o .docx)
+REPARTO_NUMERO_CODICE.xls (o .xlsx)
 ```
 
 Esempi:
@@ -44,4 +44,4 @@ TUTTI_2_AAA.xlsx
 
 ## Nota sui formati
 
-La prima versione supporta i formati moderni `.docx` e `.xlsx`. Se hai file `.doc` o `.xls`, salvali prima nei rispettivi formati moderni da Word o Excel.
+I formati `.doc`, `.docx`, `.xls` e `.xlsx` sono supportati. Per conservare nel PDF il layout originale, installa LibreOffice e rendi `libreoffice` o `soffice` disponibile nel PATH. L'app modifica solo `*nome*` e `*data*`, converte ogni modulo con il motore Office e accoda le pagine originali senza ridisegnarle.
