@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import re
@@ -35,6 +34,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
+    KeepInFrame,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -303,6 +303,74 @@ def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path
     return converted
 
 
+def _convert_with_office_batch(
+    sources: list[Path], output_dir: Path, extension: str
+) -> dict[Path, Path]:
+    """Converte più template con una sola sessione del motore Office."""
+    if not sources:
+        return {}
+    command = _office_command()
+    if command is None:
+        raise RuntimeError("Motore Office non disponibile per la conversione dei template.")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if command == "microsoft-office":
+        import win32com.client  # type: ignore[import-not-found]
+
+        applications = {}
+        converted: dict[Path, Path] = {}
+        try:
+            for source in sources:
+                kind = "word" if source.suffix.lower() == ".docx" else "excel"
+                if kind not in applications:
+                    applications[kind] = (
+                        win32com.client.DispatchEx("Word.Application")
+                        if kind == "word"
+                        else win32com.client.DispatchEx("Excel.Application")
+                    )
+                application = applications[kind]
+                target = output_dir / f"{source.stem}.{extension}"
+                document = (
+                    application.Documents.Open(str(source.resolve()))
+                    if kind == "word"
+                    else application.Workbooks.Open(str(source.resolve()))
+                )
+                try:
+                    if extension == "pdf":
+                        if kind == "word":
+                            document.ExportAsFixedFormat(str(target.resolve()), 17)
+                        else:
+                            document.ExportAsFixedFormat(0, str(target.resolve()))
+                finally:
+                    document.Close(False)
+                converted[source] = target
+        finally:
+            for application in applications.values():
+                application.Quit()
+        return converted
+
+    profile = output_dir / "office-profile"
+    result = subprocess.run(
+        [
+            command,
+            "--headless",
+            "--convert-to",
+            extension,
+            "--outdir",
+            str(output_dir),
+            f"-env:UserInstallation={profile.resolve().as_uri()}",
+            *[str(source) for source in sources],
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    converted = {source: output_dir / f"{source.stem}.{extension}" for source in sources}
+    if result.returncode != 0 or any(not path.exists() for path in converted.values()):
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"Conversione Office fallita: {detail}")
+    return converted
+
+
 def _prepare_office_template(
     template: Path,
     work_dir: Path,
@@ -342,7 +410,7 @@ def _merge_pdfs(output_path: Path, pdf_paths: list[Path]) -> None:
         writer.write(handle)
 
 
-def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
+def _fit_pdf_to_one_page(pdf_path: Path) -> Path:
     """Rimuove le pagine vuote aggiunte da alcuni export Office."""
     from pypdf import PdfReader, PdfWriter
 
@@ -360,15 +428,40 @@ def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
         if text.strip() or has_images or has_drawing_commands:
             break
         last_page -= 1
-    if last_page == len(reader.pages):
+    pages = reader.pages[:last_page]
+    if len(pages) == 1:
         return pdf_path
 
     trimmed = pdf_path.with_name(f"{pdf_path.stem}-trimmed.pdf")
+    from reportlab.pdfgen.canvas import Canvas
+
+    page_width, page_height = A4
+    source_width = float(pages[0].mediabox.width)
+    source_height = float(pages[0].mediabox.height)
+    scale = min(page_width / source_width, page_height / (source_height * len(pages)))
+    canvas_path = pdf_path.with_name(f"{pdf_path.stem}-one-page.pdf")
+    canvas = Canvas(str(canvas_path), pagesize=A4)
     writer = PdfWriter()
-    for page in reader.pages[:last_page]:
-        writer.add_page(page)
+    for page_index, page in enumerate(pages):
+        canvas.showPage() if page_index else None
+        canvas.saveState()
+        canvas.translate((page_width - source_width * scale) / 2, page_height - (page_index + 1) * source_height * scale)
+        canvas.scale(scale, scale)
+        canvas.restoreState()
+    canvas.save()
+    one_page = PdfReader(str(canvas_path)).pages[0]
+    for page_index, page in enumerate(pages):
+        one_page.merge_transformed_page(
+            page,
+            __import__("pypdf").Transformation().scale(scale).translate(
+                tx=(page_width - source_width * scale) / 2,
+                ty=page_height - (page_index + 1) * source_height * scale,
+            ),
+        )
+    writer.add_page(one_page)
     with trimmed.open("wb") as handle:
         writer.write(handle)
+    canvas_path.unlink(missing_ok=True)
     return trimmed
 
 
@@ -381,79 +474,23 @@ def _build_pdf_native(
     notes: str,
     expanded: list[tuple[TemplateFile, int]],
 ) -> int:
-    styles = make_styles()
     with tempfile.TemporaryDirectory(prefix="formazioni-pdf-") as temp_name:
         temp_dir = Path(temp_name)
-        cover_path = temp_dir / "cover.pdf"
-        cover = SimpleDocTemplate(
-            str(cover_path),
-            pagesize=A4,
-            rightMargin=18 * mm,
-            leftMargin=18 * mm,
-            topMargin=17 * mm,
-            bottomMargin=17 * mm,
-            title=f"Dossier formazione - {employee_name}",
-            author="Formazioni PZZ",
-        )
-        cover_story: list[object] = [
-            Spacer(1, 17 * mm),
-            Paragraph("Formazioni PZZ", styles["cover_title"]),
-            Paragraph("Dossier di inserimento del personale", styles["cover_subtitle"]),
-            Spacer(1, 13 * mm),
-            HRFlowable(width="70%", thickness=1, color=colors.HexColor("#e4a24c"), hAlign="CENTER"),
-            Spacer(1, 13 * mm),
-            Table(
-                [
-                    [Paragraph("<b>Nome</b>", styles["meta"]), paragraph_text(employee_name, styles["meta"])],
-                    [Paragraph("<b>Data di ingresso</b>", styles["meta"]), paragraph_text(entry_date, styles["meta"])],
-                    [Paragraph("<b>Reparto</b>", styles["meta"]), paragraph_text(department, styles["meta"])],
-                    [Paragraph("<b>Ruolo</b>", styles["meta"]), paragraph_text(role or "-", styles["meta"])],
-                    [Paragraph("<b>Documenti</b>", styles["meta"]), paragraph_text(str(len(expanded)), styles["meta"])],
-                ],
-                colWidths=[44 * mm, 100 * mm],
-                hAlign="CENTER",
-                style=TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f1f6f5")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#b9c9cf")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6e1e3")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                    ("TOPPADDING", (0, 0), (-1, -1), 7),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                ]),
-            ),
-            Spacer(1, 11 * mm),
-            Paragraph(
-                "Il dossier contiene i documenti applicabili al reparto selezionato "
-                "secondo quanto indicato nei file presenti nella cartella dei template.",
-                styles["small"],
-            ),
-        ]
-        if notes.strip():
-            cover_story.extend([
-                Spacer(1, 7 * mm),
-                Paragraph("<b>Note</b>", styles["subheading"]),
-                paragraph_text(notes, styles["body"]),
-            ])
-        cover.build(cover_story)
-
-        pages = [cover_path]
-        prepared_pdfs: dict[Path, Path] = {}
+        prepared: dict[Path, Path] = {}
         for index, (template, _copy_number) in enumerate(expanded):
-            if template.path.suffix.lower() == ".pdf":
-                pages.append(template.path)
-                continue
-            if template.path not in prepared_pdfs:
-                prepared = _prepare_office_template(
-                    template.path,
-                    temp_dir / f"template-{index}",
-                    employee_name,
-                    entry_date,
+            if template.path.suffix.lower() != ".pdf" and template.path not in prepared:
+                prepared[template.path] = _prepare_office_template(
+                    template.path, temp_dir / f"template-{index}", employee_name, entry_date
                 )
-                converted = _convert_with_office(prepared, prepared.parent, "pdf")
-                prepared_pdfs[template.path] = _remove_trailing_blank_pages(converted)
-            pages.append(prepared_pdfs[template.path])
+        converted = _convert_with_office_batch(
+            list(prepared.values()), temp_dir / "converted", "pdf"
+        )
+        pages = [
+            _fit_pdf_to_one_page(template.path)
+            if template.path.suffix.lower() == ".pdf"
+            else _fit_pdf_to_one_page(converted[prepared[template.path]])
+            for template, _copy_number in expanded
+        ]
         _merge_pdfs(output_path, pages)
     return len(expanded)
 
@@ -753,48 +790,10 @@ def build_pdf(
         title=f"Dossier formazione - {employee_name}",
         author="Formazioni PZZ",
     )
-    story: list[object] = [
-        Spacer(1, 17 * mm),
-        Paragraph("Formazioni PZZ", styles["cover_title"]),
-        Paragraph("Dossier di inserimento del personale", styles["cover_subtitle"]),
-        Spacer(1, 13 * mm),
-        HRFlowable(width="70%", thickness=1, color=colors.HexColor("#e4a24c"), hAlign="CENTER"),
-        Spacer(1, 13 * mm),
-        Table(
-            [
-                [Paragraph("<b>Nome</b>", styles["meta"]), paragraph_text(employee_name, styles["meta"])],
-                [Paragraph("<b>Data di ingresso</b>", styles["meta"]), paragraph_text(entry_date, styles["meta"])],
-                [Paragraph("<b>Reparto</b>", styles["meta"]), paragraph_text(department, styles["meta"])],
-                [Paragraph("<b>Ruolo</b>", styles["meta"]), paragraph_text(role or "—", styles["meta"])],
-                [Paragraph("<b>Documenti</b>", styles["meta"]), paragraph_text(str(len(expanded)), styles["meta"])],
-            ],
-            colWidths=[44 * mm, 100 * mm],
-            hAlign="CENTER",
-            style=TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f1f6f5")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#b9c9cf")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6e1e3")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                    ("TOPPADDING", (0, 0), (-1, -1), 7),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                ]
-            ),
-        ),
-        Spacer(1, 11 * mm),
-        Paragraph(
-            "Il dossier contiene i documenti applicabili al reparto selezionato "
-            "secondo quanto indicato nei file presenti nella cartella dei template.",
-            styles["small"],
-        ),
-    ]
-    if notes.strip():
-        story.extend([Spacer(1, 7 * mm), Paragraph("<b>Note</b>", styles["subheading"]), paragraph_text(notes, styles["body"])])
+    story: list[object] = []
 
     for index, (template, copy_number) in enumerate(expanded):
-        if index > 0 or notes.strip() or expanded:
+        if index > 0:
             story.append(PageBreak())
         module_story: list[object] = []
         if template.path.suffix.lower() == ".docx":
@@ -803,7 +802,14 @@ def build_pdf(
             module_story = xlsx_story(template.path, employee_name, entry_date, styles)
         elif template.path.suffix.lower() == ".pdf":
             module_story = pdf_story(template.path, employee_name, entry_date, styles)
-        story.append(KeepTogether(module_story))
+        story.append(
+            KeepInFrame(
+                174 * mm,
+                263 * mm,
+                module_story,
+                mode="shrink",
+            )
+        )
     doc.build(story)
     return len(expanded)
 
