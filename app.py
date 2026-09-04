@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ from docx import Document
 from openpyxl import load_workbook
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -442,6 +443,13 @@ def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
     return trimmed
 
 
+def _pdf_is_landscape(pdf_path: Path) -> bool:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(pdf_path))
+    return bool(reader.pages and reader.pages[0].mediabox.width > reader.pages[0].mediabox.height)
+
+
 def _build_pdf_native(
     output_path: Path,
     employee_name: str,
@@ -694,6 +702,8 @@ def pdf_story(
     employee_name: str,
     entry_date: str,
     styles: dict[str, ParagraphStyle],
+    frame_width: float = 174 * mm,
+    frame_height: float = 263 * mm,
 ) -> list[object]:
     """Include a PDF template as text pages in the dossier.
 
@@ -708,6 +718,14 @@ def pdf_story(
     page that references the file name so the dossier is complete.
     """
     story: list[object] = []
+    pdf_style = styles["pdf_page"]
+    if frame_width > frame_height:
+        pdf_style = ParagraphStyle(
+            "PdfPageLandscape",
+            parent=styles["pdf_page"],
+            fontSize=8,
+            leading=10.5,
+        )
     try:
         from pypdf import PdfReader
     except Exception:
@@ -750,9 +768,9 @@ def pdf_story(
                 if not line.strip():
                     page_story.append(Spacer(1, 1.5 * mm))
                     continue
-                page_story.append(Paragraph(escape(line), styles["pdf_page"]))
+                page_story.append(Paragraph(escape(line), pdf_style))
             page_story.append(Spacer(1, 4 * mm))
-        story.append(KeepInFrame(174 * mm, 263 * mm, page_story, mode="shrink"))
+        story.append(KeepInFrame(frame_width, frame_height, page_story, mode="shrink"))
         if idx < len(reader.pages):
             story.append(PageBreak())
     return story or [paragraph_text("Documento PDF senza contenuto testuale.", styles["muted"])]
@@ -788,32 +806,52 @@ def build_pdf(
             notes,
             expanded,
         )
+    has_landscape_pdf = any(
+        template.path.suffix.lower() == ".pdf"
+        and _pdf_is_landscape(template.path)
+        for template, _ in expanded
+    )
+    page_size = landscape(A4) if has_landscape_pdf else A4
+    page_width, page_height = page_size
+    horizontal_frame = min(page_width - 28 * mm, 263 * mm)
+    vertical_frame = min(page_height - 28 * mm, 174 * mm)
     doc = SimpleDocTemplate(
         str(output_path),
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=17 * mm,
-        bottomMargin=17 * mm,
+        pagesize=page_size,
+        rightMargin=14 * mm,
+        leftMargin=14 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
         title=f"Dossier formazione - {employee_name}",
         author="Formazioni PZZ",
     )
     story: list[object] = []
+    story_cache: dict[Path, list[object]] = {}
 
     for index, (template, copy_number) in enumerate(expanded):
         if index > 0:
             story.append(PageBreak())
         module_story: list[object] = []
-        if template.path.suffix.lower() == ".docx":
-            module_story = docx_story(template.path, employee_name, entry_date, styles)
-        elif template.path.suffix.lower() == ".xlsx":
-            module_story = xlsx_story(template.path, employee_name, entry_date, styles)
-        elif template.path.suffix.lower() == ".pdf":
-            module_story = pdf_story(template.path, employee_name, entry_date, styles)
-        if template.path.suffix.lower() == ".pdf":
-            story.extend(module_story)
-        else:
-            story.extend(module_story)
+        if template.path not in story_cache:
+            suffix = template.path.suffix.lower()
+            if suffix == ".docx":
+                story_cache[template.path] = docx_story(
+                    template.path, employee_name, entry_date, styles
+                )
+            elif suffix == ".xlsx":
+                story_cache[template.path] = xlsx_story(
+                    template.path, employee_name, entry_date, styles
+                )
+            elif suffix == ".pdf":
+                story_cache[template.path] = pdf_story(
+                    template.path,
+                    employee_name,
+                    entry_date,
+                    styles,
+                    horizontal_frame,
+                    vertical_frame,
+                )
+        story.extend(deepcopy(story_cache.get(template.path, [])))
     doc.build(story)
     return len(expanded)
 
