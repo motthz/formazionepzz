@@ -1778,12 +1778,12 @@ class FormazioniApp:
 
         self._field_label(form_body, self.tr("lbl_name"), row=0)
         name_entry = ttk.Entry(form_body, textvariable=self.employee_name)
-        self._wrap_field(form_body, 0, name_entry)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 14))
         self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
 
         self._field_label(form_body, self.tr("lbl_trainer"), row=1)
         trainer_entry = ttk.Entry(form_body, textvariable=self.trainer_name)
-        self._wrap_field(form_body, 1, trainer_entry)
+        trainer_entry.grid(row=1, column=1, sticky="ew", pady=(0, 14))
         self._add_tooltip(trainer_entry, lambda: self.tr("tt_trainer"))
 
         self._field_label(form_body, self.tr("lbl_date"), row=2)
@@ -1796,7 +1796,7 @@ class FormazioniApp:
 
         self._field_label(form_body, self.tr("lbl_role"), row=3)
         role_entry = ttk.Entry(form_body, textvariable=self.role)
-        self._wrap_field(form_body, 3, role_entry)
+        role_entry.grid(row=3, column=1, sticky="ew", pady=(0, 14))
         self._add_tooltip(role_entry, lambda: self.tr("tt_role"))
 
         tk.Label(form_body, text=self.tr("lbl_notes"),
