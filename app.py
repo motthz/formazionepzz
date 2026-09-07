@@ -335,25 +335,20 @@ def templates_for_departments(
     )
 
 
-def replace_placeholders(
-    value: object, employee_name: str, entry_date: str, trainer_name: str = ""
-) -> object:
+def replace_placeholders(value: object, employee_name: str, entry_date: str) -> object:
     if not isinstance(value, str):
         return value
     value = re.sub(r"\*nome\*", employee_name, value, flags=re.IGNORECASE)
-    value = re.sub(r"\*data\*", entry_date, value, flags=re.IGNORECASE)
-    value = re.sub(r"\*operatore\*", trainer_name, value, flags=re.IGNORECASE)
-    value = re.sub(r"\*formatore\*", trainer_name, value, flags=re.IGNORECASE)
-    return re.sub(r"\*trainer\*", trainer_name, value, flags=re.IGNORECASE)
+    return re.sub(r"\*data\*", entry_date, value, flags=re.IGNORECASE)
 
 
-def replace_paragraph(paragraph, employee_name: str, entry_date: str, trainer_name: str = "") -> None:
+def replace_paragraph(paragraph, employee_name: str, entry_date: str) -> None:
     original = paragraph.text
     for run in paragraph.runs:
-        run.text = str(replace_placeholders(run.text, employee_name, entry_date, trainer_name))
+        run.text = str(replace_placeholders(run.text, employee_name, entry_date))
     if paragraph.text != original:
         return
-    replaced = replace_placeholders(original, employee_name, entry_date, trainer_name)
+    replaced = replace_placeholders(original, employee_name, entry_date)
     if original == replaced:
         return
     if paragraph.runs:
@@ -364,35 +359,31 @@ def replace_paragraph(paragraph, employee_name: str, entry_date: str, trainer_na
         paragraph.add_run(str(replaced))
 
 
-def replace_docx_placeholders(
-    document: Document, employee_name: str, entry_date: str, trainer_name: str = ""
-) -> None:
+def replace_docx_placeholders(document: Document, employee_name: str, entry_date: str) -> None:
     for paragraph in document.paragraphs:
-        replace_paragraph(paragraph, employee_name, entry_date, trainer_name)
+        replace_paragraph(paragraph, employee_name, entry_date)
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    replace_paragraph(paragraph, employee_name, entry_date, trainer_name)
+                    replace_paragraph(paragraph, employee_name, entry_date)
     for section in document.sections:
         for container in (section.header, section.footer):
             for paragraph in container.paragraphs:
-                replace_paragraph(paragraph, employee_name, entry_date, trainer_name)
+                replace_paragraph(paragraph, employee_name, entry_date)
             for table in container.tables:
                 for row in table.rows:
                     for cell in row.cells:
                         for paragraph in cell.paragraphs:
-                            replace_paragraph(paragraph, employee_name, entry_date, trainer_name)
+                            replace_paragraph(paragraph, employee_name, entry_date)
 
 
-def replace_xlsx_placeholders(
-    workbook, employee_name: str, entry_date: str, trainer_name: str = ""
-) -> None:
+def replace_xlsx_placeholders(workbook, employee_name: str, entry_date: str) -> None:
     for sheet in workbook.worksheets:
         for row in sheet.iter_rows():
             for cell in row:
                 try:
-                    cell.value = replace_placeholders(cell.value, employee_name, entry_date, trainer_name)
+                    cell.value = replace_placeholders(cell.value, employee_name, entry_date)
                 except AttributeError:
                     pass
 
@@ -544,7 +535,6 @@ def _prepare_office_template(
     work_dir: Path,
     employee_name: str,
     entry_date: str,
-    trainer_name: str = "",
 ) -> Path:
     suffix = template.suffix.lower()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -557,12 +547,12 @@ def _prepare_office_template(
 
     if source.suffix.lower() == ".docx":
         document = Document(str(source))
-        replace_docx_placeholders(document, employee_name, entry_date, trainer_name)
+        replace_docx_placeholders(document, employee_name, entry_date)
         document.save(str(source))
     elif source.suffix.lower() == ".xlsx":
         workbook = load_workbook(source, data_only=False, read_only=False)
         try:
-            replace_xlsx_placeholders(workbook, employee_name, entry_date, trainer_name)
+            replace_xlsx_placeholders(workbook, employee_name, entry_date)
             workbook.save(source)
         finally:
             workbook.close()
@@ -625,7 +615,6 @@ def _build_pdf_native(
     notes: str,
     expanded: list[tuple[TemplateFile, int]],
     progress_cb=None,
-    trainer_name: str = "",
 ) -> int:
     total_steps = max(1, len({t.path for t, _ in expanded}) + 1)
     step = 0
@@ -640,7 +629,7 @@ def _build_pdf_native(
 
         for template_path, index in unique_templates.items():
             prepared[template_path] = _prepare_office_template(
-                template_path, temp_dir / f"template-{index}", employee_name, entry_date, trainer_name
+                template_path, temp_dir / f"template-{index}", employee_name, entry_date
             )
             step += 1
             if progress_cb:
@@ -725,10 +714,9 @@ def docx_story(
     employee_name: str,
     entry_date: str,
     styles: dict[str, ParagraphStyle],
-    trainer_name: str = "",
 ) -> list[object]:
     document = Document(path)
-    replace_docx_placeholders(document, employee_name, entry_date, trainer_name)
+    replace_docx_placeholders(document, employee_name, entry_date)
     story: list[object] = []
     style_name_cache: dict[int, str] = {}
     for paragraph in document.paragraphs:
@@ -769,7 +757,6 @@ def xlsx_story(
     employee_name: str,
     entry_date: str,
     styles: dict[str, ParagraphStyle],
-    trainer_name: str = "",
 ) -> list[object]:
     workbook = load_workbook(path, data_only=False, read_only=False)
     story: list[object] = []
@@ -779,7 +766,7 @@ def xlsx_story(
             raw_rows: list[list[str]] = []
             for row in sheet.iter_rows(values_only=True):
                 values = [
-                    replace_placeholders(value, employee_name, entry_date, trainer_name)
+                    replace_placeholders(value, employee_name, entry_date)
                     for value in row
                 ]
                 if any(value not in (None, "") for value in values):
@@ -842,7 +829,6 @@ def pdf_story(
     styles: dict[str, ParagraphStyle],
     frame_width: float = 174 * mm,
     frame_height: float = 263 * mm,
-    trainer_name: str = "",
 ) -> list[object]:
     story: list[object] = []
     pdf_style = styles["pdf_page"]
@@ -873,7 +859,7 @@ def pdf_story(
             raw = page.extract_text() or ""
         except Exception:
             raw = ""
-        raw = replace_placeholders(raw, employee_name, entry_date, trainer_name)
+        raw = replace_placeholders(raw, employee_name, entry_date)
         lines = [ln.rstrip() for ln in raw.splitlines()]
         if not any(ln.strip() for ln in lines):
             page_story.append(paragraph_text(
@@ -902,7 +888,6 @@ def build_pdf(
     notes: str,
     templates: list[TemplateFile],
     progress_cb=None,
-    trainer_name: str = "",
 ) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     styles = make_styles()
@@ -918,7 +903,7 @@ def build_pdf(
     if _office_command() and needs_legacy_office:
         return _build_pdf_native(
             output_path, employee_name, entry_date, department, role, notes, expanded,
-            progress_cb=progress_cb, trainer_name=trainer_name,
+            progress_cb=progress_cb,
         )
     has_landscape_pdf = any(
         template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
@@ -954,7 +939,7 @@ def build_pdf(
             mtime = 0
         key = (
             hash(template.path.resolve().as_posix()),
-            mtime, employee_name, entry_date, trainer_name, suffix,
+            mtime, employee_name, entry_date, suffix,
             int(horizontal_frame), int(vertical_frame),
         )
         cached_global = _TEMPLATE_STORY_CACHE.get(key)
@@ -962,12 +947,12 @@ def build_pdf(
             story_cache_local[template.path] = cached_global
             return cached_global
         if suffix == ".docx":
-            generated = docx_story(template.path, employee_name, entry_date, styles, trainer_name)
+            generated = docx_story(template.path, employee_name, entry_date, styles)
         elif suffix == ".xlsx":
-            generated = xlsx_story(template.path, employee_name, entry_date, styles, trainer_name)
+            generated = xlsx_story(template.path, employee_name, entry_date, styles)
         elif suffix == ".pdf":
             generated = pdf_story(template.path, employee_name, entry_date, styles,
-                                  horizontal_frame, vertical_frame, trainer_name)
+                                  horizontal_frame, vertical_frame)
         else:
             generated = []
         story_cache_local[template.path] = generated
@@ -1203,7 +1188,6 @@ class FormazioniApp:
         self.template_dir = StringVar(value=self.settings.get("last_template_dir", str(DEFAULT_TEMPLATE_DIR)))
         self.output_dir = StringVar(value=self.settings.get("last_output_dir", str(DEFAULT_OUTPUT_DIR)))
         self.employee_name = StringVar()
-        self.trainer_name = StringVar()
         self.role = StringVar()
         self.department = StringVar()
         self.auto_open = BooleanVar(value=True)
@@ -1350,7 +1334,7 @@ class FormazioniApp:
             secondary_fg = "#0f2a36"
             accent_btn_bg = gold
             accent_btn_fg = "#2a1a00"
-            field_bg = "#ffffff"
+            field_bg = "#f6fafb"
             field_fg = "#0f2a36"
             border = "#cfe1e4"
             focus = "#2a8e8e"
@@ -1421,7 +1405,7 @@ class FormazioniApp:
         style.configure("TEntry", fieldbackground=field_bg, foreground=field_fg,
                         bordercolor=border, lightcolor=border, darkcolor=border,
                         padding=9, focusthickness=2, focuscolor=focus,
-                        font=("Segoe UI", 10))
+                        font=("Segoe UI", 10), borderwidth=1, relief="solid")
         style.map("TEntry",
                   bordercolor=[("focus", focus), ("!focus", border)],
                   lightcolor=[("focus", focus), ("!focus", border)],
@@ -1431,7 +1415,7 @@ class FormazioniApp:
                         background=field_bg, arrowcolor=tree_head_fg,
                         bordercolor=border, lightcolor=border, darkcolor=border,
                         padding=8, focusthickness=2, focuscolor=focus,
-                        font=("Segoe UI", 10))
+                        font=("Segoe UI", 10), borderwidth=1, relief="solid")
         style.map("TCombobox",
                   bordercolor=[("focus", focus), ("!focus", border)],
                   lightcolor=[("focus", focus), ("!focus", border)],
@@ -1781,34 +1765,29 @@ class FormazioniApp:
         self._wrap_field(form_body, 0, name_entry)
         self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
 
-        self._field_label(form_body, self.tr("lbl_trainer"), row=1)
-        trainer_entry = ttk.Entry(form_body, textvariable=self.trainer_name)
-        self._wrap_field(form_body, 1, trainer_entry)
-        self._add_tooltip(trainer_entry, lambda: self.tr("tt_trainer"))
-
-        self._field_label(form_body, self.tr("lbl_date"), row=2)
+        self._field_label(form_body, self.tr("lbl_date"), row=1)
         self.date_picker = DatePickerFrame(form_body, self.language,
                                            bg=self._style_colors["card_body_bg"])
-        self.date_picker.grid(row=2, column=1, sticky="nsew", pady=(0, 14))
+        self.date_picker.grid(row=1, column=1, sticky="nsew", pady=(0, 14))
         self._add_tooltip(self.date_picker, lambda: self.tr("tt_date"))
         for w in (self.date_picker.day_cb, self.date_picker.month_cb, self.date_picker.year_cb):
             self._add_tooltip(w, lambda: self.tr("tt_date"))
 
-        self._field_label(form_body, self.tr("lbl_role"), row=3)
+        self._field_label(form_body, self.tr("lbl_role"), row=2)
         role_entry = ttk.Entry(form_body, textvariable=self.role)
-        self._wrap_field(form_body, 3, role_entry)
+        self._wrap_field(form_body, 2, role_entry)
         self._add_tooltip(role_entry, lambda: self.tr("tt_role"))
 
         tk.Label(form_body, text=self.tr("lbl_notes"),
                  bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
                  font=("Segoe UI Semibold", 9, "bold"), anchor="w"
-                 ).grid(row=4, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
+                 ).grid(row=3, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
         notes_wrap = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
-        notes_wrap.grid(row=4, column=1, sticky="nsew", pady=(0, 14))
+        notes_wrap.grid(row=3, column=1, sticky="nsew", pady=(0, 14))
         notes_wrap.grid_columnconfigure(0, weight=1)
         colors = self._style_colors
         notes_entry = tk.Text(
-            notes_wrap, height=6, wrap="word", font=("Segoe UI", 10),
+            notes_wrap, height=7, wrap="word", font=("Segoe UI", 10),
             bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
             highlightthickness=2, highlightbackground=colors["border"],
             highlightcolor=colors["focus"], padx=10, pady=9,
@@ -1820,10 +1799,10 @@ class FormazioniApp:
         sb_notes.grid(row=0, column=1, sticky="ns")
         notes_entry.configure(yscrollcommand=sb_notes.set)
         self._add_tooltip(notes_entry, lambda: self.tr("tt_notes"))
-        form_body.rowconfigure(4, weight=1)
+        form_body.rowconfigure(3, weight=1)
 
         bottom_form = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
-        bottom_form.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        bottom_form.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         auto_cb = ttk.Checkbutton(bottom_form, text=self.tr("cb_autoopen"),
                                   variable=self.auto_open)
         auto_cb.pack(side=LEFT)
@@ -2310,7 +2289,6 @@ class FormazioniApp:
         self._persist_settings()
         # --- Read ALL Tk/StringVar values IN MAIN THREAD before starting worker ---
         role_value = self.role.get().strip()
-        trainer_value = self.trainer_name.get().strip()
         auto_open_value = bool(self.auto_open.get())
         saved_snapshot = dict(self.saved_hashes) if self.saved_hashes else {}
         tr_done = self.tr("mb_status_done", name=output_path.name)
@@ -2323,8 +2301,7 @@ class FormazioniApp:
             try:
                 total = build_pdf(output_path, name, entry_date, dept_str,
                                   role_value, notes, selected,
-                                  progress_cb=progress_cb,
-                                  trainer_name=trainer_value)
+                                  progress_cb=progress_cb)
                 self._save_history(output_path, name, dept_str, total)
                 hashes = dict(saved_snapshot)
                 for t in selected:
@@ -2520,12 +2497,12 @@ class FormazioniApp:
         tree_holder.pack(fill=BOTH, expand=True, pady=(0, 12))
         tree_holder.rowconfigure(0, weight=1)
         tree_holder.columnconfigure(0, weight=1)
-        pv = ttk.Treeview(tree_holder, columns=("nome", "operatore", "data", "reparto", "ruolo", "note"),
+        pv = ttk.Treeview(tree_holder, columns=("nome", "data", "reparto", "ruolo", "note"),
                           show="headings", height=14)
-        for col, title in (("nome", "Nome"), ("operatore", "Operatore"), ("data", "Data"),
-                           ("reparto", "Reparto"), ("ruolo", "Ruolo"), ("note", "Note")):
+        for col, title in (("nome", "Nome"), ("data", "Data"), ("reparto", "Reparto"),
+                           ("ruolo", "Ruolo"), ("note", "Note")):
             pv.heading(col, text=title)
-            pv.column(col, width=120 if col in {"nome", "operatore", "ruolo", "note"} else 90, anchor="w")
+            pv.column(col, width=140 if col in {"nome", "ruolo", "note"} else 110, anchor="w")
         pv.grid(row=0, column=0, sticky="nsew")
         vsb = ttk.Scrollbar(tree_holder, orient="vertical", command=pv.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -2552,7 +2529,7 @@ class FormazioniApp:
             for item in pv.get_children():
                 pv.delete(item)
             for r in rows_data:
-                pv.insert("", END, values=(r.get("Nome", ""), r.get("Operatore", ""), r.get("Data", ""),
+                pv.insert("", END, values=(r.get("Nome", ""), r.get("Data", ""),
                                            r.get("Reparto", ""), r.get("Ruolo", ""), r.get("Note", "")))
 
         def run():
@@ -2586,7 +2563,6 @@ class FormazioniApp:
                     for idx, row in enumerate(rows_data, start=1):
                         self._post("progress", {"step": idx, "total": total})
                         nome = (row.get("Nome") or row.get("name") or "").strip()
-                        operatore = (row.get("Operatore") or row.get("Formatore") or row.get("trainer") or row.get("operator") or "").strip()
                         data = (row.get("Data") or row.get("date") or "").strip()
                         reparto = (row.get("Reparto") or row.get("department") or "").strip()
                         ruolo = (row.get("Ruolo") or row.get("role") or "").strip()
@@ -2622,8 +2598,7 @@ class FormazioniApp:
                             c += 1
                         try:
                             build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                      reparto.upper(), ruolo, note, filt,
-                                      trainer_name=operatore)
+                                      reparto.upper(), ruolo, note, filt)
                             self._save_history(out_file, nome, reparto.upper(), len(filt))
                             ok += 1
                             details.append(f"#{idx} OK · {out_file.name}")
@@ -2691,8 +2666,6 @@ class FormazioniApp:
             for c in header:
                 if c in {"nome", "name"}:
                     norm.append("Nome")
-                elif c in {"operatore", "formatore", "trainer", "operator"}:
-                    norm.append("Operatore")
                 elif c in {"data", "date"}:
                     norm.append("Data")
                 elif c in {"reparto", "department", "dipartimento"}:
@@ -2723,8 +2696,6 @@ class FormazioniApp:
         for c in header:
             if c in {"nome", "name"}:
                 norm.append("Nome")
-            elif c in {"operatore", "formatore", "trainer", "operator"}:
-                norm.append("Operatore")
             elif c in {"data", "date"}:
                 norm.append("Data")
             elif c in {"reparto", "department", "dipartimento"}:

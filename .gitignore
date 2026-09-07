@@ -14,9 +14,21 @@ node_modules
 
 # Formazioni PZZ local data
 output/
+build/
+dist/
 .formazioni_history.json
+.template_hashes.json
+settings.json
+.trigger-build
 __pycache__/
 *.py[cod]
+
+# PDF generati in release
+release/*.pdf
+
+# Test obsoleti / temporanei
+test_pulito.py
+test_exe_build.py
 
 # IDEs and editors
 /.idea
