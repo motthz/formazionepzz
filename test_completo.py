@@ -190,13 +190,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
         check("templates_for_department", False, str(e))
 
     # === FA-006: replace_placeholders ===
-    heading("FA-006 — Sostituzione placeholder *nome* e *data*")
+    heading("FA-006 — Sostituzione placeholder *nome*, *data*, *operatore* / *formatore* / *trainer*")
     try:
-        r = app.replace_placeholders("Ciao *nome*, benvenuto il *data*", "Mario Rossi", "01/09/2026")
-        check("Sostituzione base", r == "Ciao Mario Rossi, benvenuto il 01/09/2026", str(r))
-        r2 = app.replace_placeholders("*NOME* - *DATA*", "Luigi Bianchi", "15/10/2026")
-        check("Case insensitive", r2 == "Luigi Bianchi - 15/10/2026", str(r2))
-        r3 = app.replace_placeholders(42, "a", "b")
+        r = app.replace_placeholders("Ciao *nome*, benvenuto il *data*, formatore: *operatore*", "Mario Rossi", "01/09/2026", "Anna Verdi")
+        check("Sostituzione base con operatore", r == "Ciao Mario Rossi, benvenuto il 01/09/2026, formatore: Anna Verdi", str(r))
+        r2 = app.replace_placeholders("*NOME* - *DATA* - *FORMATORE* - *TRAINER*", "Luigi Bianchi", "15/10/2026", "Paolo Rossi")
+        check("Case insensitive con alias formatore/trainer", r2 == "Luigi Bianchi - 15/10/2026 - Paolo Rossi - Paolo Rossi", str(r2))
+        r3 = app.replace_placeholders(42, "a", "b", "c")
         check("Non-stringhe passanti", r3 == 42)
     except Exception as e:
         check("replace_placeholders", False, str(e))
