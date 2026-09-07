@@ -1760,45 +1760,55 @@ class FormazioniApp:
         form_shadow.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
         form_body.columnconfigure(1, weight=1)
 
-        self._field_label(form_body, self.tr("lbl_name"), row=0)
-        name_entry = ttk.Entry(form_body, textvariable=self.employee_name)
-        self._wrap_field(form_body, 0, name_entry)
+        def add_row(r, label_text, widget_or_constructor, notes_widget=False, weight=0):
+            tk.Label(form_body, text=label_text,
+                     bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
+                     font=("Segoe UI Semibold", 9, "bold"), anchor="w"
+                     ).grid(row=r, column=0, sticky="we", padx=(0, 18), pady=(0, 4))
+            if notes_widget:
+                wrap = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
+                wrap.grid(row=r, column=1, sticky="nsew", pady=(0, 14))
+                wrap.grid_columnconfigure(0, weight=1)
+                form_body.rowconfigure(r, weight=1 if weight else 0)
+                return wrap, widget_or_constructor(wrap)
+            w = widget_or_constructor(form_body)
+            w.grid(row=r, column=1, sticky="ew", pady=(0, 14))
+            return None, w
+
+        _, name_entry = add_row(0, self.tr("lbl_name"),
+            lambda parent: ttk.Entry(parent, textvariable=self.employee_name))
         self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
 
-        self._field_label(form_body, self.tr("lbl_date"), row=1)
-        self.date_picker = DatePickerFrame(form_body, self.language,
-                                           bg=self._style_colors["card_body_bg"])
-        self.date_picker.grid(row=1, column=1, sticky="nsew", pady=(0, 14))
+        _, dp = add_row(1, self.tr("lbl_date"),
+            lambda parent: DatePickerFrame(parent, self.language,
+                                           bg=self._style_colors["card_body_bg"]))
+        self.date_picker = dp
         self._add_tooltip(self.date_picker, lambda: self.tr("tt_date"))
         for w in (self.date_picker.day_cb, self.date_picker.month_cb, self.date_picker.year_cb):
             self._add_tooltip(w, lambda: self.tr("tt_date"))
 
-        self._field_label(form_body, self.tr("lbl_role"), row=2)
-        role_entry = ttk.Entry(form_body, textvariable=self.role)
-        self._wrap_field(form_body, 2, role_entry)
+        _, role_entry = add_row(2, self.tr("lbl_role"),
+            lambda parent: ttk.Entry(parent, textvariable=self.role))
         self._add_tooltip(role_entry, lambda: self.tr("tt_role"))
 
-        tk.Label(form_body, text=self.tr("lbl_notes"),
-                 bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
-                 font=("Segoe UI Semibold", 9, "bold"), anchor="w"
-                 ).grid(row=3, column=0, sticky="nwe", padx=(0, 16), pady=(0, 6))
-        notes_wrap = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
-        notes_wrap.grid(row=3, column=1, sticky="nsew", pady=(0, 14))
-        notes_wrap.grid_columnconfigure(0, weight=1)
-        colors = self._style_colors
-        notes_entry = tk.Text(
-            notes_wrap, height=7, wrap="word", font=("Segoe UI", 10),
-            bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
-            highlightthickness=2, highlightbackground=colors["border"],
-            highlightcolor=colors["focus"], padx=10, pady=9,
-            insertbackground=colors["focus"],
-        )
-        notes_entry.grid(row=0, column=0, sticky="nsew")
-        self.notes_widget = notes_entry
-        sb_notes = ttk.Scrollbar(notes_wrap, orient="vertical", command=notes_entry.yview)
-        sb_notes.grid(row=0, column=1, sticky="ns")
-        notes_entry.configure(yscrollcommand=sb_notes.set)
-        self._add_tooltip(notes_entry, lambda: self.tr("tt_notes"))
+        notes_wrap, _ = add_row(3, self.tr("lbl_notes"),
+            lambda wrap: self._make_notes_widget(wrap), notes_widget=True, weight=1)
+        self.notes_widget = None
+        for c in notes_wrap.winfo_children():
+            if isinstance(c, tk.Text):
+                self.notes_widget = c
+                break
+        if self.notes_widget is None:
+            colors = self._style_colors
+            self.notes_widget = tk.Text(
+                notes_wrap, height=7, wrap="word", font=("Segoe UI", 10),
+                bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
+                highlightthickness=2, highlightbackground=colors["border"],
+                highlightcolor=colors["focus"], padx=10, pady=9,
+                insertbackground=colors["focus"],
+            )
+            self.notes_widget.grid(row=0, column=0, sticky="nsew")
+        self._add_tooltip(self.notes_widget, lambda: self.tr("tt_notes"))
         form_body.rowconfigure(3, weight=1)
 
         bottom_form = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
@@ -1807,6 +1817,21 @@ class FormazioniApp:
                                   variable=self.auto_open)
         auto_cb.pack(side=LEFT)
         self._add_tooltip(auto_cb, lambda: self.tr("tt_autoopen"))
+
+    def _make_notes_widget(self, wrap):
+        colors = self._style_colors
+        notes_entry = tk.Text(
+            wrap, height=7, wrap="word", font=("Segoe UI", 10),
+            bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
+            highlightthickness=2, highlightbackground=colors["border"],
+            highlightcolor=colors["focus"], padx=10, pady=9,
+            insertbackground=colors["focus"],
+        )
+        notes_entry.grid(row=0, column=0, sticky="nsew")
+        sb_notes = ttk.Scrollbar(wrap, orient="vertical", command=notes_entry.yview)
+        sb_notes.grid(row=0, column=1, sticky="ns")
+        notes_entry.configure(yscrollcommand=sb_notes.set)
+        return notes_entry
 
     # ----------------------- Card 3 (Summary) -----------------------------
     def _build_card3(self, body):
