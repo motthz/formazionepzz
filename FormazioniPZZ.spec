@@ -6,12 +6,19 @@ _lang_files = [
     for f in os.listdir('lang') if f.lower().endswith('.json')
 ] if os.path.isdir('lang') else []
 
+_asset_files = []
+if os.path.isdir('assets'):
+    for _f in os.listdir('assets'):
+        if _f.lower().endswith(('.ico', '.png')):
+            _asset_files.append((os.path.join('assets', _f), os.path.join('assets')))
+
+_datas = _lang_files + _asset_files
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=_lang_files,
+    datas=_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

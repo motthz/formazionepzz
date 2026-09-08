@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+import struct
+import zlib
 
 try:
     import tkinter as tk
@@ -76,6 +78,114 @@ FILENAME_PATTERN = re.compile(
 SETTINGS_FILE = APP_DIR / "settings.json"
 HASHES_FILE = APP_DIR / ".template_hashes.json"
 LANG_DIR = APP_DIR / "lang"
+ICON_DIR = APP_DIR / "assets"
+ICON_ICO = ICON_DIR / "app_icon.ico"
+ICON_PNG = ICON_DIR / "app_icon.png"
+
+
+def _build_in_memory_icon(width=32, height=32, bg1=(12, 34, 53), bg2=(21, 58, 82),
+                          gold=(217, 161, 63)):
+    """Build a pure-Python in-memory icon (RGBA) so no external deps needed."""
+    pixels = bytearray()
+    cx = cy = (width - 1) / 2.0
+    for y in range(height):
+        for x in range(width):
+            # card corners (outer/inner rounded)
+            def in_rect(px, py, ox, oy, ex, ey, r):
+                if not (ox <= px <= ex and oy <= py <= ey):
+                    return False
+                dx = dy = 0
+                if px < ox + r and py < oy + r:
+                    dx = ox + r - px
+                    dy = oy + r - py
+                    if dx * dx + dy * dy > r * r:
+                        return False
+                if px > ex - r and py < oy + r:
+                    dx = px - (ex - r)
+                    dy = oy + r - py
+                    if dx * dx + dy * dy > r * r:
+                        return False
+                if px < ox + r and py > ey - r:
+                    dx = ox + r - px
+                    dy = py - (ey - r)
+                    if dx * dx + dy * dy > r * r:
+                        return False
+                if px > ex - r and py > ey - r:
+                    dx = px - (ex - r)
+                    dy = py - (ey - r)
+                    if dx * dx + dy * dy > r * r:
+                        return False
+                return True
+            outer = in_rect(x, y, 1, 1, width - 2, height - 2, width // 8)
+            inner = in_rect(x, y, 3, 3, width - 4, height - 4, max(2, width // 9))
+            # gold band bottom
+            gold_y = y >= height - (height // 3)
+            if not outer:
+                r = g = b = 0
+                a = 0
+            elif not inner:
+                r, g, b = bg1
+                a = 255
+            elif gold_y:
+                r, g, b = gold
+                a = 255
+            else:
+                r, g, b = bg2
+                a = 255
+            pixels.extend((r, g, b, a))
+    return bytes(pixels), width, height
+
+
+def _png_from_rgba(rgba: bytes, w: int, h: int) -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        row_start = y * w * 4
+        raw.extend(rgba[row_start:row_start + w * 4])
+    idat = zlib.compress(bytes(raw), 9)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def _set_app_icon(root) -> None:
+    """Try to set root window icon using multiple strategies."""
+    # 1) Try .ico file on disk
+    try:
+        if ICON_ICO.exists():
+            root.iconbitmap(default=str(ICON_ICO))
+    except Exception:
+        pass
+    # 2) Try PNG file (preferred fallback) via PhotoImage
+    try:
+        if ICON_PNG.exists():
+            img = tk.PhotoImage(file=str(ICON_PNG))
+            root.iconphoto(True, img)
+            root._pzz_icon_photo = img  # keep reference
+            return
+    except Exception:
+        pass
+    # 3) Fallback: build a simple in-memory icon and feed it as PNG data
+    try:
+        rgba, w, h = _build_in_memory_icon()
+        png_data = _png_from_rgba(rgba, w, h)
+        img = tk.PhotoImage(data=png_data)
+        root.iconphoto(True, img)
+        root._pzz_icon_photo = img
+        # Also make larger version (64x64)
+        try:
+            rgba2, w2, h2 = _build_in_memory_icon(64, 64)
+            img2 = tk.PhotoImage(data=_png_from_rgba(rgba2, w2, h2))
+            root.iconphoto(False, img2)
+            root._pzz_icon_photo_big = img2
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 DEFAULT_LANG = "it"
 DEFAULT_THEME = "light"
 MONTH_KEYS = (
@@ -1073,7 +1183,12 @@ class Tooltip:
 
 
 class DatePickerFrame(tk.Frame):
-    """Date picker puro Tk: 3 Combobox (giorno/mese/anno) con validazione."""
+    """Date picker puro Tk: 3 Combobox (giorno/mese/anno) con validazione.
+
+    Nota: intercetta <MouseWheel> sul DatePicker e lo traduce in avanti/indietro
+    sul Combobox *sotto il mouse* (giorno/mese/anno) SENZA propagare l'evento
+    al resto dell'app — evita che la rotella scrolli insieme tutte le scrollbar.
+    """
 
     def __init__(self, master, language: dict[str, str], initial: date | None = None, **kwargs):
         super().__init__(master, **kwargs)
@@ -1083,6 +1198,7 @@ class DatePickerFrame(tk.Frame):
             initial = date.today()
         self.set_date(initial)
         self._bind_change()
+        self._bind_wheel_block()
 
     def _build(self):
         self.columnconfigure(0, weight=0)
@@ -1098,6 +1214,78 @@ class DatePickerFrame(tk.Frame):
         self.day_cb.grid(row=0, column=0, padx=(0, 6), sticky="w")
         self.month_cb.grid(row=0, column=1, padx=(0, 6), sticky="w")
         self.year_cb.grid(row=0, column=2, sticky="w")
+
+    def _bind_wheel_block(self):
+        def step_cb(cb, direction, _evt):
+            vals = list(cb["values"])
+            if not vals:
+                return "break"
+            current = cb.current()
+            if current < 0:
+                current = 0
+            new = current + direction
+            if new < 0:
+                new = 0
+            elif new >= len(vals):
+                new = len(vals) - 1
+            if new != current:
+                cb.current(new)
+                cb.event_generate("<<ComboboxSelected>>")
+            return "break"
+
+        def on_window(evt):
+            # Target the Combobox under the mouse if any; otherwise first focused
+            target = None
+            x_root, y_root = evt.x_root, evt.y_root
+            for cb in (self.day_cb, self.month_cb, self.year_cb):
+                try:
+                    x0 = cb.winfo_rootx()
+                    y0 = cb.winfo_rooty()
+                    x1 = x0 + cb.winfo_width()
+                    y1 = y0 + cb.winfo_height()
+                    if x0 <= x_root <= x1 and y0 <= y_root <= y1:
+                        target = cb
+                        break
+                except Exception:
+                    continue
+            if target is None:
+                try:
+                    focus_w = self.focus_get()
+                    if focus_w in (self.day_cb, self.month_cb, self.year_cb):
+                        target = focus_w
+                except Exception:
+                    target = None
+            # direction: delta > 0 means scroll up / forward => previous value
+            direction = 1 if evt.delta < 0 else -1
+            if target is not None:
+                return step_cb(target, direction, evt)
+            return "break"
+
+        for w in (self, self.day_cb, self.month_cb, self.year_cb):
+            w.bind("<MouseWheel>", on_window)
+            # Unix
+            w.bind("<Button-4>",
+                   lambda e, d=-1: (step_cb(self._cb_under_mouse(e) or self.day_cb, d, e), "break"))
+            w.bind("<Button-5>",
+                   lambda e, d=+1: (step_cb(self._cb_under_mouse(e) or self.day_cb, d, e), "break"))
+
+    def _cb_under_mouse(self, evt):
+        try:
+            x_root = evt.x_root if hasattr(evt, "x_root") else self.winfo_rootx() + evt.x
+            y_root = evt.y_root if hasattr(evt, "y_root") else self.winfo_rooty() + evt.y
+        except Exception:
+            return None
+        for cb in (self.day_cb, self.month_cb, self.year_cb):
+            try:
+                x0 = cb.winfo_rootx()
+                y0 = cb.winfo_rooty()
+                x1 = x0 + cb.winfo_width()
+                y1 = y0 + cb.winfo_height()
+                if x0 <= x_root <= x1 and y0 <= y_root <= y1:
+                    return cb
+            except Exception:
+                continue
+        return None
 
     def _bind_change(self):
         def sync(_e=None):
@@ -1212,6 +1400,10 @@ class FormazioniApp:
         self.root.title(self.tr("app_title"))
         self.root.geometry("1120x820")
         self.root.minsize(980, 720)
+        try:
+            _set_app_icon(self.root)
+        except Exception:
+            pass
 
         self._configure_style()
         self._apply_theme_root()
@@ -1458,7 +1650,11 @@ class FormazioniApp:
         self._style_colors = {
             "app_bg": app_bg, "card_bg": card_bg, "card_body_bg": card_body_bg,
             "sh1": sh1, "sh2": sh2, "text": text, "text_muted": text_muted,
-            "gold": gold, "accent_bg": accent_bg, "title_bg": title_bg,
+            "gold": gold, "accent_bg": accent_bg, "accent_fg": accent_fg,
+            "title_bg": title_bg, "title_fg": title_fg,
+            "accent_label_bg": accent_label_bg, "accent_label_fg": accent_label_fg,
+            "section_bg": section_bg, "section_fg": section_fg,
+            "muted_bg": muted_bg, "muted_fg": muted_fg,
             "gold_bg": gold_bg, "count_bg": count_bg, "secure_bg": secure_bg,
             "field_bg": field_bg, "border": border, "focus": focus,
         }
@@ -1531,6 +1727,26 @@ class FormazioniApp:
 
         content = tk.Frame(header_outer, bg=title_bg)
         content.place(x=42, y=28, relwidth=1.0, width=-84)
+
+        logo_wrap = tk.Frame(content, bg=title_bg)
+        logo_wrap.pack(side=LEFT, padx=(0, 18))
+        try:
+            if ICON_PNG.exists():
+                logo_img = tk.PhotoImage(file=str(ICON_PNG))
+            else:
+                rgba, ww, hh = _build_in_memory_icon(64, 64)
+                logo_img = tk.PhotoImage(data=_png_from_rgba(rgba, ww, hh))
+            # Resize to 40x40: use subsample/zoom as available, keep sharp
+            try:
+                logo_img = logo_img.subsample(max(1, logo_img.width() // 40),
+                                               max(1, logo_img.height() // 40))
+            except Exception:
+                pass
+            logo_lbl = tk.Label(logo_wrap, image=logo_img, bg=title_bg, bd=0)
+            logo_lbl.pack(side=LEFT)
+            self._header_logo = logo_img
+        except Exception:
+            self._header_logo = None
 
         ttk.Label(content, text=self.tr("eyebrow"), style="Eyebrow.TLabel").pack(anchor="w")
         ttk.Label(content, text=self.tr("header_title"), style="Title.TLabel").pack(anchor="w", pady=(4, 0))
@@ -1633,7 +1849,53 @@ class FormazioniApp:
 
         scrolled.bind("<Configure>", _on_scroll_config)
         canvas_wrap.bind("<Configure>", _on_canvas_config)
+
+        scrollable_widgets_wheel_local: list[Any] = []
+
+        def _register_local_wheel(w):
+            scrollable_widgets_wheel_local.append(w)
+
+        self._register_local_wheel = _register_local_wheel
+
+        def _is_in_local_widget(evt):
+            try:
+                x_root, y_root = evt.x_root, evt.y_root
+            except Exception:
+                try:
+                    x_root = self.root.winfo_pointerx()
+                    y_root = self.root.winfo_pointery()
+                except Exception:
+                    return False
+            for w in list(scrollable_widgets_wheel_local):
+                try:
+                    if not w.winfo_exists():
+                        continue
+                except Exception:
+                    continue
+                stack = [w]
+                while stack:
+                    cur = stack.pop()
+                    try:
+                        if not cur.winfo_exists():
+                            continue
+                    except Exception:
+                        continue
+                    try:
+                        x0 = cur.winfo_rootx()
+                        y0 = cur.winfo_rooty()
+                        x1 = x0 + cur.winfo_width()
+                        y1 = y0 + cur.winfo_height()
+                    except Exception:
+                        stack.extend(list(getattr(cur, "winfo_children", lambda: [])()))
+                        continue
+                    if x0 <= x_root <= x1 and y0 <= y_root <= y1:
+                        return True
+                    stack.extend(list(getattr(cur, "winfo_children", lambda: [])()))
+            return False
+
         def _on_wheel(evt):
+            if _is_in_local_widget(evt):
+                return
             try:
                 if canvas_wrap.winfo_exists():
                     canvas_wrap.yview_scroll(int(-1 * (evt.delta / 120)), "units")
@@ -1760,26 +2022,20 @@ class FormazioniApp:
         form_shadow.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
         form_body.columnconfigure(1, weight=1)
 
-        def add_row(r, label_text, widget_or_constructor, notes_widget=False, weight=0):
+        def add_row(r, label_text, widget_or_constructor):
             tk.Label(form_body, text=label_text,
                      bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
                      font=("Segoe UI Semibold", 9, "bold"), anchor="w"
                      ).grid(row=r, column=0, sticky="we", padx=(0, 18), pady=(0, 4))
-            if notes_widget:
-                wrap = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
-                wrap.grid(row=r, column=1, sticky="nsew", pady=(0, 14))
-                wrap.grid_columnconfigure(0, weight=1)
-                form_body.rowconfigure(r, weight=1 if weight else 0)
-                return wrap, widget_or_constructor(wrap)
             w = widget_or_constructor(form_body)
             w.grid(row=r, column=1, sticky="ew", pady=(0, 14))
-            return None, w
+            return w
 
-        _, name_entry = add_row(0, self.tr("lbl_name"),
+        name_entry = add_row(0, self.tr("lbl_name"),
             lambda parent: ttk.Entry(parent, textvariable=self.employee_name))
         self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
 
-        _, dp = add_row(1, self.tr("lbl_date"),
+        dp = add_row(1, self.tr("lbl_date"),
             lambda parent: DatePickerFrame(parent, self.language,
                                            bg=self._style_colors["card_body_bg"]))
         self.date_picker = dp
@@ -1787,51 +2043,288 @@ class FormazioniApp:
         for w in (self.date_picker.day_cb, self.date_picker.month_cb, self.date_picker.year_cb):
             self._add_tooltip(w, lambda: self.tr("tt_date"))
 
-        _, role_entry = add_row(2, self.tr("lbl_role"),
-            lambda parent: ttk.Entry(parent, textvariable=self.role))
-        self._add_tooltip(role_entry, lambda: self.tr("tt_role"))
+        # --- Section: Batch inline (add people + run directly) ---
+        batch_box = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
+        batch_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 8))
+        batch_box.columnconfigure(0, weight=0)
+        batch_box.columnconfigure(1, weight=1)
+        batch_box.rowconfigure(0, weight=1)
 
-        notes_wrap, _ = add_row(3, self.tr("lbl_notes"),
-            lambda wrap: self._make_notes_widget(wrap), notes_widget=True, weight=1)
-        self.notes_widget = None
-        for c in notes_wrap.winfo_children():
-            if isinstance(c, tk.Text):
-                self.notes_widget = c
-                break
-        if self.notes_widget is None:
-            colors = self._style_colors
-            self.notes_widget = tk.Text(
-                notes_wrap, height=7, wrap="word", font=("Segoe UI", 10),
-                bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
-                highlightthickness=2, highlightbackground=colors["border"],
-                highlightcolor=colors["focus"], padx=10, pady=9,
-                insertbackground=colors["focus"],
-            )
-            self.notes_widget.grid(row=0, column=0, sticky="nsew")
-        self._add_tooltip(self.notes_widget, lambda: self.tr("tt_notes"))
-        form_body.rowconfigure(3, weight=1)
+        bt = tk.Label(
+            batch_box,
+            text="   " + self.tr("bat_inline_title"),
+            bg=self._style_colors["accent_bg"], fg=self._style_colors["accent_label_fg"],
+            font=("Segoe UI Semibold", 9, "bold"), anchor="w",
+        )
+        bt.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(batch_box, text=self.tr("bat_inline_subtitle"),
+                  style="Muted.TLabel"
+                  ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        people_tree_wrap = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
+        people_tree_wrap.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        people_tree_wrap.rowconfigure(0, weight=1)
+        people_tree_wrap.columnconfigure(0, weight=1)
+        batch_body_columns = ("nome", "data", "reparto")
+        people_tree = ttk.Treeview(people_tree_wrap, columns=batch_body_columns,
+                                   show="headings", height=8)
+        for col_key, heading, width in (
+            ("nome", self.tr("col_name"), 200),
+            ("data", self.tr("col_date"), 150),
+            ("reparto", self.tr("col_dept"), 160),
+        ):
+            people_tree.heading(col_key, text=heading)
+            people_tree.column(col_key, width=width, anchor="w")
+        people_tree.grid(row=0, column=0, sticky="nsew")
+        p_sb = ttk.Scrollbar(people_tree_wrap, orient="vertical", command=people_tree.yview)
+        p_sb.grid(row=0, column=1, sticky="ns")
+        people_tree.configure(yscrollcommand=p_sb.set)
+        self._inline_batch_tree = people_tree
+        self._inline_batch_rows: list[dict[str, str]] = []
+
+        actions = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew")
+        btn_add = ttk.Button(actions, text=self.tr("bat_add_person"),
+                             style="Secondary.TButton",
+                             command=self._inline_batch_add_current)
+        btn_add.pack(side=LEFT)
+        btn_del = ttk.Button(actions, text=self.tr("bat_del_person"),
+                             style="Secondary.TButton",
+                             command=self._inline_batch_remove_selected)
+        btn_del.pack(side=LEFT, padx=(6, 0))
+        btn_load = ttk.Button(actions, text=self.tr("bat_import_file"),
+                              style="Secondary.TButton",
+                              command=self._inline_batch_import_file)
+        btn_load.pack(side=LEFT, padx=(6, 0))
+        btn_clear = ttk.Button(actions, text=self.tr("bat_clear"),
+                               style="Secondary.TButton",
+                               command=self._inline_batch_clear)
+        btn_clear.pack(side=LEFT, padx=(6, 0))
+
+        batch_run_wrap = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
+        batch_run_wrap.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        tk.Frame(batch_run_wrap, bg=self._style_colors["gold"],
+                 height=2).pack(fill=X, side="top", pady=(0, 10))
+        run_count_lbl = ttk.Label(batch_run_wrap, textvariable=self._inline_batch_count(),
+                                  style="Count.TLabel")
+        run_count_lbl.pack(side=LEFT)
+        btn_run = ttk.Button(batch_run_wrap, text=self.tr("bat_run_all"),
+                             style="Primary.TButton",
+                             command=self._inline_batch_run)
+        btn_run.pack(side=RIGHT, ipadx=14, ipady=5)
+        self._add_tooltip(btn_run, lambda: self.tr("tt_batch_run"))
+        self._add_tooltip(btn_add, lambda: self.tr("tt_batch_add"))
+        self._add_tooltip(btn_del, lambda: self.tr("tt_batch_del"))
+        self._add_tooltip(btn_load, lambda: self.tr("tt_batch_import"))
+        self._add_tooltip(btn_clear, lambda: self.tr("tt_batch_clear"))
+
+        form_body.rowconfigure(2, weight=1)
+        batch_box.rowconfigure(2, weight=1)
 
         bottom_form = tk.Frame(form_body, bg=self._style_colors["card_body_bg"])
-        bottom_form.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        bottom_form.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         auto_cb = ttk.Checkbutton(bottom_form, text=self.tr("cb_autoopen"),
                                   variable=self.auto_open)
         auto_cb.pack(side=LEFT)
         self._add_tooltip(auto_cb, lambda: self.tr("tt_autoopen"))
 
-    def _make_notes_widget(self, wrap):
-        colors = self._style_colors
-        notes_entry = tk.Text(
-            wrap, height=7, wrap="word", font=("Segoe UI", 10),
-            bg=colors["field_bg"], fg=colors["text"], relief="solid", borderwidth=1,
-            highlightthickness=2, highlightbackground=colors["border"],
-            highlightcolor=colors["focus"], padx=10, pady=9,
-            insertbackground=colors["focus"],
+    def _inline_batch_count(self) -> StringVar:
+        self._inline_batch_count_var = var = StringVar()
+
+        def _fmt(n):
+            if n == 0:
+                return self.tr("bat_count_none")
+            return self.tr("bat_run_all", n=n)
+
+        self._inline_batch_count_fmt = _fmt
+        self._refresh_inline_batch_count()
+        return var
+
+    def _refresh_inline_batch_count(self):
+        fmt = getattr(self, "_inline_batch_count_fmt", None)
+        var = getattr(self, "_inline_batch_count_var", None)
+        if var is None or fmt is None:
+            return
+        n = len(getattr(self, "_inline_batch_rows", []))
+        var.set(fmt(n))
+
+    def _current_dept_for_batch(self) -> str:
+        depts = self._current_departments()
+        return depts[0] if len(depts) == 1 else "+".join(depts)
+
+    def _inline_batch_add_current(self):
+        name = self.employee_name.get().strip()
+        if not name:
+            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_name"))
+            return
+        entry_date = self.date_picker.get_string()
+        if not entry_date:
+            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_date"))
+            return
+        depts = self._current_departments()
+        if not depts:
+            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_dept"))
+            return
+        if not self._current_selected_templates():
+            messagebox.showwarning(self.tr("mb_no_docs_title"), self.tr("mb_no_docs_body"))
+            return
+        dept_str = "+".join(depts)
+        row = {"Nome": name, "Data": entry_date, "Reparto": dept_str}
+        self._inline_batch_rows.append(row)
+        tree = self._inline_batch_tree
+        tree.insert("", END, values=(row["Nome"], row["Data"], row["Reparto"]))
+        self._refresh_inline_batch_count()
+        self.employee_name.set("")
+
+    def _inline_batch_remove_selected(self):
+        tree = self._inline_batch_tree
+        sel = tree.selection()
+        if not sel:
+            return
+        # Map tree children index to rows (insert order = _inline_batch_rows)
+        children = tree.get_children()
+        idxs_to_remove = set()
+        for s in sel:
+            try:
+                idxs_to_remove.add(children.index(s))
+            except ValueError:
+                continue
+        new_rows = [r for i, r in enumerate(self._inline_batch_rows)
+                    if i not in idxs_to_remove]
+        self._inline_batch_rows = new_rows
+        for s in sel:
+            tree.delete(s)
+        self._refresh_inline_batch_count()
+
+    def _inline_batch_clear(self):
+        self._inline_batch_rows.clear()
+        tree = self._inline_batch_tree
+        for c in tree.get_children():
+            tree.delete(c)
+        self._refresh_inline_batch_count()
+
+    def _inline_batch_import_file(self):
+        p = filedialog.askopenfilename(
+            title=self.tr("bat_choose"),
+            initialdir=self.template_dir.get(),
+            filetypes=[("CSV / Excel", "*.csv *.xlsx *.xls"), ("All", "*.*")],
         )
-        notes_entry.grid(row=0, column=0, sticky="nsew")
-        sb_notes = ttk.Scrollbar(wrap, orient="vertical", command=notes_entry.yview)
-        sb_notes.grid(row=0, column=1, sticky="ns")
-        notes_entry.configure(yscrollcommand=sb_notes.set)
-        return notes_entry
+        if not p:
+            return
+        try:
+            loaded = self._parse_batch_file(Path(p))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(self.tr("mb_error_title"), str(exc))
+            return
+        tree = self._inline_batch_tree
+        for r in loaded:
+            nome = (r.get("Nome") or r.get("name") or "").strip()
+            data = (r.get("Data") or r.get("date") or "").strip()
+            reparto = (r.get("Reparto") or r.get("department") or "").strip().upper()
+            if not nome or not data:
+                continue
+            row = {"Nome": nome, "Data": data, "Reparto": reparto}
+            self._inline_batch_rows.append(row)
+            tree.insert("", END, values=(nome, data, reparto))
+        self._refresh_inline_batch_count()
+
+    def _inline_batch_run(self):
+        rows = list(getattr(self, "_inline_batch_rows", []))
+        if not rows:
+            messagebox.showwarning(self.tr("bat_summary_title"), self.tr("bat_no_rows"))
+            return
+        if self._worker_active:
+            return
+        self._worker_active = True
+        self._post("progress_ready_label", None)
+        auto_open_batch = bool(self.auto_open.get())
+        lang_snap = dict(self.language) if self.language else {}
+
+        def s_tr(key: str, **kw) -> str:
+            raw = lang_snap.get(key, key)
+            try:
+                return raw.format(**kw) if kw else raw
+            except Exception:
+                return raw
+
+        tpl_snap = list(self.templates)
+        inc_snap = dict(self.template_inclusion)
+        saved_snap = dict(self.saved_hashes) if self.saved_hashes else {}
+        dept_opts = {d.upper() for d in department_options(tpl_snap)}
+        out_dir_path = Path(self.output_dir.get()).expanduser()
+
+        def work2():
+            ok = skip = fail = 0
+            details: list[str] = []
+            total = max(1, len(rows))
+            try:
+                for idx, row in enumerate(rows, start=1):
+                    self._post("progress", {"step": idx, "total": total})
+                    nome = (row.get("Nome") or "").strip()
+                    data = (row.get("Data") or "").strip()
+                    reparto_raw = (row.get("Reparto") or "").strip()
+                    reparto_list = [d for d in reparto_raw.split("+") if d]
+                    if not reparto_list:
+                        reparto_list = [dept_opts.pop() if len(dept_opts) == 1 else ""]
+                    note = ""
+                    ruolo = ""
+                    if not nome:
+                        skip += 1
+                        details.append(s_tr("bat_skip_empty", i=idx))
+                        continue
+                    parsed = self._parse_date_str(data)
+                    if parsed is None:
+                        skip += 1
+                        details.append(s_tr("bat_skip_date", i=idx))
+                        continue
+                    for single_dept in reparto_list or [reparto_raw.upper()]:
+                        dept_ok = (single_dept and single_dept.upper() in dept_opts)
+                        if not dept_ok:
+                            skip += 1
+                            details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
+                            continue
+                        sel = templates_for_department(tpl_snap, single_dept.upper())
+                        filt = [t for t in sel if inc_snap.get(t.path, True)]
+                        if not filt:
+                            skip += 1
+                            details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
+                            continue
+                        out_file = out_dir_path / (
+                            f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}.pdf"
+                        )
+                        c = 2
+                        while out_file.exists():
+                            out_file = out_dir_path / (
+                                f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}_{c}.pdf"
+                            )
+                            c += 1
+                        try:
+                            build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
+                                      single_dept.upper(), ruolo, note, filt)
+                            self._save_history(out_file, nome, single_dept.upper(), len(filt))
+                            ok += 1
+                            details.append(f"#{idx} OK · {out_file.name}")
+                        except Exception as exc:  # noqa: BLE001
+                            fail += 1
+                            details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
+                hashes = dict(saved_snap)
+                for t in tpl_snap:
+                    try:
+                        hashes[str(t.path)] = compute_template_hash(t.path)
+                    except Exception:
+                        pass
+                save_hashes(hashes)
+                self.saved_hashes = hashes
+            finally:
+                self._post("done_batch", {
+                    "ok": ok, "skip": skip, "fail": fail,
+                    "detail": "\n".join(details[-30:]),
+                    "out_dir": str(out_dir_path),
+                    "auto_open": bool(auto_open_batch),
+                })
+                self._post("worker_done", None)
+
+        threading.Thread(target=work2, daemon=True).start()
 
     # ----------------------- Card 3 (Summary) -----------------------------
     def _build_card3(self, body):
@@ -2128,15 +2621,7 @@ class FormazioniApp:
         self._configure_style()
         self._apply_theme_root()
         self.root.title(self.tr("app_title"))
-        # Save transient non-StringVar state before destroy
-        saved_notes = ""
         saved_date = None
-        try:
-            if hasattr(self, "notes_widget") and self.notes_widget is not None:
-                if self.notes_widget.winfo_exists():
-                    saved_notes = self.notes_widget.get("1.0", "end-1c")
-        except Exception:
-            saved_notes = ""
         try:
             if hasattr(self, "date_picker") and self.date_picker is not None:
                 try:
@@ -2146,6 +2631,24 @@ class FormazioniApp:
                     saved_date = None
         except Exception:
             saved_date = None
+        saved_batch: list[dict[str, str]] = []
+        saved_batch_tree_rows: list[tuple] = []
+        try:
+            if hasattr(self, "_inline_batch_rows") and isinstance(self._inline_batch_rows, list):
+                saved_batch = [dict(r) for r in self._inline_batch_rows]
+            if hasattr(self, "_inline_batch_tree") and self._inline_batch_tree is not None:
+                try:
+                    tree = self._inline_batch_tree
+                    if tree.winfo_exists():
+                        for c in tree.get_children():
+                            try:
+                                saved_batch_tree_rows.append(tuple(tree.item(c, "values")))
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # Status/count/progress StringVar: reapply keys that are language-dependent
         self.status.set(self.tr("status_initial"))
         self.count_label.set(self.tr("count_none"))
@@ -2158,17 +2661,6 @@ class FormazioniApp:
         self._build_header()
         self._build_body()
         self.refresh_templates()
-        # Restore transient non-StringVar state after rebuild
-        try:
-            if saved_notes and hasattr(self, "notes_widget") and self.notes_widget is not None:
-                try:
-                    if self.notes_widget.winfo_exists():
-                        self.notes_widget.delete("1.0", "end")
-                        self.notes_widget.insert("1.0", saved_notes)
-                except Exception:
-                    pass
-        except Exception:
-            pass
         try:
             if saved_date is not None and hasattr(self, "date_picker") and self.date_picker is not None:
                 try:
@@ -2177,6 +2669,22 @@ class FormazioniApp:
                         self.date_picker.configure_language(self.language)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        try:
+            if saved_batch and hasattr(self, "_inline_batch_rows"):
+                self._inline_batch_rows = [dict(r) for r in saved_batch]
+                tree = getattr(self, "_inline_batch_tree", None)
+                if tree is not None and tree.winfo_exists():
+                    for c in tree.get_children():
+                        tree.delete(c)
+                    rows_to_use = (saved_batch_tree_rows
+                                   if len(saved_batch_tree_rows) == len(saved_batch)
+                                   else [(r.get("Nome", ""), r.get("Data", ""),
+                                          r.get("Reparto", "")) for r in saved_batch])
+                    for vals in rows_to_use:
+                        tree.insert("", END, values=tuple(vals))
+                self._refresh_inline_batch_count()
         except Exception:
             pass
 
@@ -2306,14 +2814,14 @@ class FormazioniApp:
                 f"dossier_{safe_file_part(name)}_{dept_tag}_{counter}.pdf"
             )
             counter += 1
-        notes = self.notes_widget.get("1.0", END).strip()
         dept_str = "+".join(departments)
         self._worker_active = True
         self.status.set(self.tr("mb_progress_status"))
         self._post("progress_ready_label", None)
         self._persist_settings()
-        # --- Read ALL Tk/StringVar values IN MAIN THREAD before starting worker ---
-        role_value = self.role.get().strip()
+        # Ruolo e note disabilitati: valori statici vuoti (rimossi da UI in v2)
+        ruolo = ""
+        note = ""
         auto_open_value = bool(self.auto_open.get())
         saved_snapshot = dict(self.saved_hashes) if self.saved_hashes else {}
         tr_done = self.tr("mb_status_done", name=output_path.name)
@@ -2325,7 +2833,7 @@ class FormazioniApp:
         def work():
             try:
                 total = build_pdf(output_path, name, entry_date, dept_str,
-                                  role_value, notes, selected,
+                                  ruolo, note, selected,
                                   progress_cb=progress_cb)
                 self._save_history(output_path, name, dept_str, total)
                 hashes = dict(saved_snapshot)
@@ -2410,6 +2918,10 @@ class FormazioniApp:
         win.grab_set()
         win.geometry("520x480")
         win.configure(bg=self._style_colors["app_bg"])
+        try:
+            _set_app_icon(win)
+        except Exception:
+            pass
         body = tk.Frame(win, bg=self._style_colors["card_body_bg"], padx=18, pady=18)
         body.pack(fill=BOTH, expand=True, padx=14, pady=14)
         ttk.Label(body, text=self.tr("de_hint"), style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
@@ -2510,6 +3022,10 @@ class FormazioniApp:
         win.grab_set()
         win.geometry("760x560")
         win.configure(bg=self._style_colors["app_bg"])
+        try:
+            _set_app_icon(win)
+        except Exception:
+            pass
         body = tk.Frame(win, bg=self._style_colors["card_body_bg"], padx=18, pady=18)
         body.pack(fill=BOTH, expand=True, padx=14, pady=14)
         ttk.Label(body, text=self.tr("bat_subtitle"), style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
@@ -2522,16 +3038,24 @@ class FormazioniApp:
         tree_holder.pack(fill=BOTH, expand=True, pady=(0, 12))
         tree_holder.rowconfigure(0, weight=1)
         tree_holder.columnconfigure(0, weight=1)
-        pv = ttk.Treeview(tree_holder, columns=("nome", "data", "reparto", "ruolo", "note"),
+        pv = ttk.Treeview(tree_holder, columns=("nome", "data", "reparto"),
                           show="headings", height=14)
-        for col, title in (("nome", "Nome"), ("data", "Data"), ("reparto", "Reparto"),
-                           ("ruolo", "Ruolo"), ("note", "Note")):
+        for col, title, width in (("nome", "Nome", 220),
+                                  ("data", "Data", 150),
+                                  ("reparto", "Reparto", 220)):
             pv.heading(col, text=title)
-            pv.column(col, width=140 if col in {"nome", "ruolo", "note"} else 110, anchor="w")
+            pv.column(col, width=width, anchor="w")
         pv.grid(row=0, column=0, sticky="nsew")
         vsb = ttk.Scrollbar(tree_holder, orient="vertical", command=pv.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         pv.configure(yscrollcommand=vsb.set)
+        # Register the Treeview so wheel inside it doesn't scroll main window
+        try:
+            reg = getattr(self, "_register_local_wheel", None)
+            if callable(reg):
+                reg(pv)
+        except Exception:
+            pass
 
         rows_data: list[dict[str, str]] = []
 
@@ -2555,10 +3079,11 @@ class FormazioniApp:
                 pv.delete(item)
             for r in rows_data:
                 pv.insert("", END, values=(r.get("Nome", ""), r.get("Data", ""),
-                                           r.get("Reparto", ""), r.get("Ruolo", ""), r.get("Note", "")))
+                                           r.get("Reparto", "")))
 
         def run():
             if not rows_data:
+                messagebox.showwarning(self.tr("bat_summary_title"), self.tr("bat_no_rows"))
                 return
             if self._worker_active:
                 return
@@ -2589,9 +3114,10 @@ class FormazioniApp:
                         self._post("progress", {"step": idx, "total": total})
                         nome = (row.get("Nome") or row.get("name") or "").strip()
                         data = (row.get("Data") or row.get("date") or "").strip()
-                        reparto = (row.get("Reparto") or row.get("department") or "").strip()
-                        ruolo = (row.get("Ruolo") or row.get("role") or "").strip()
-                        note = (row.get("Note") or row.get("notes") or "").strip()
+                        reparto_raw = (row.get("Reparto") or row.get("department") or "").strip()
+                        reparto_list = [d for d in reparto_raw.split("+") if d]
+                        ruolo = ""
+                        note = ""
                         if not nome:
                             skip += 1
                             details.append(s_tr("bat_skip_empty", i=idx))
@@ -2601,35 +3127,36 @@ class FormazioniApp:
                             skip += 1
                             details.append(s_tr("bat_skip_date", i=idx))
                             continue
-                        dept_ok = reparto.upper() in dept_opts
-                        if not dept_ok:
-                            skip += 1
-                            details.append(s_tr("bat_skip_dept", i=idx, d=reparto))
-                            continue
-                        sel = templates_for_department(tpl_snap, reparto)
-                        filt = [t for t in sel if inc_snap.get(t.path, True)]
-                        if not filt:
-                            skip += 1
-                            details.append(s_tr("bat_skip_dept", i=idx, d=reparto))
-                            continue
-                        out_file = out_dir_snap / (
-                            f"dossier_{safe_file_part(nome)}_{safe_file_part(reparto)}.pdf"
-                        )
-                        c = 2
-                        while out_file.exists():
+                        for single_dept in (reparto_list or [reparto_raw.upper()]):
+                            dept_ok = (single_dept and single_dept.upper() in dept_opts)
+                            if not dept_ok:
+                                skip += 1
+                                details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
+                                continue
+                            sel = templates_for_department(tpl_snap, single_dept.upper())
+                            filt = [t for t in sel if inc_snap.get(t.path, True)]
+                            if not filt:
+                                skip += 1
+                                details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
+                                continue
                             out_file = out_dir_snap / (
-                                f"dossier_{safe_file_part(nome)}_{safe_file_part(reparto)}_{c}.pdf"
+                                f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}.pdf"
                             )
-                            c += 1
-                        try:
-                            build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                      reparto.upper(), ruolo, note, filt)
-                            self._save_history(out_file, nome, reparto.upper(), len(filt))
-                            ok += 1
-                            details.append(f"#{idx} OK · {out_file.name}")
-                        except Exception as exc:  # noqa: BLE001
-                            fail += 1
-                            details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
+                            c = 2
+                            while out_file.exists():
+                                out_file = out_dir_snap / (
+                                    f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}_{c}.pdf"
+                                )
+                                c += 1
+                            try:
+                                build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
+                                          single_dept.upper(), ruolo, note, filt)
+                                self._save_history(out_file, nome, single_dept.upper(), len(filt))
+                                ok += 1
+                                details.append(f"#{idx} OK · {out_file.name}")
+                            except Exception as exc:  # noqa: BLE001
+                                fail += 1
+                                details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
                     hashes = dict(saved_snap)
                     for t in tpl_snap:
                         try:
@@ -2648,13 +3175,14 @@ class FormazioniApp:
                     self._post("worker_done", None)
 
             threading.Thread(target=work2, daemon=True).start()
+            win.destroy()
 
         ttk.Button(top_row, text=self.tr("bat_choose"), style="Secondary.TButton",
                    command=load).pack(side=LEFT)
 
         footer = tk.Frame(body, bg=self._style_colors["card_body_bg"])
         footer.pack(fill=X, side="bottom")
-        ttk.Label(footer, text=self.tr("bat_cols"), style="AppMuted.TLabel"
+        ttk.Label(footer, text=self.tr("bat_cols_short"), style="AppMuted.TLabel"
                   ).pack(side=LEFT)
         ttk.Button(footer, text=self.tr("bat_run"), style="Primary.TButton",
                    command=run).pack(side=RIGHT)
