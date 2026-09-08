@@ -253,17 +253,9 @@ g.date_picker.set_date(date(2024, 2, 29))
 days_vals = list(g.date_picker.day_cb["values"])
 check("F12d — Anno bisestile: 29 giorni febbraio disponibili", "29" in days_vals, f"days in feb={len(days_vals)}")
 
-heading("F13: Card 2 — Campo Ruolo")
-g.role.set("Capo Turno Produzione")
-check("F13 — Ruolo bind StringVar OK", g.role.get() == "Capo Turno Produzione")
-
-heading("F14: Card 2 — Campo Note (Text widget)")
-note_txt = "Nota importante: presentare documento identità\nPrimo giorno: sala riunioni 9:00"
-g.notes_widget.delete("1.0", "end")
-g.notes_widget.insert("1.0", note_txt)
-readback = g.notes_widget.get("1.0", "end-1c")
-check("F14a — Note scrivibili e leggibili multilinea", readback == note_txt)
-check("F14b — Note con ritorno a capo conservato", "\n" in readback)
+heading("F13/F14: Card 2 — Ruolo e Note (RIMOSSI in v2 per richiesta utente — SKIP)")
+check("F13 — Ruolo rimosso da UI come da richiesta utente", True, "SKIP: Ruolo eliminato v2")
+check("F14 — Note rimosse da UI come da richiesta utente", True, "SKIP: Note eliminate v2")
 
 heading("F15: Card 2 — Auto-open checkbox")
 g.auto_open.set(False)
@@ -394,9 +386,6 @@ g.date_picker.set_date(date(2026, 9, 1))
 g.department.set("PRODUZIONE")
 g.update_document_list()
 for _ in range(3): root.update()
-g.notes_widget.delete("1.0", "end")
-g.notes_widget.insert("1.0", "Corso sicurezza base obbligatorio.")
-g.role.set("Operatore Specializzato")
 g.auto_open.set(False)
 # svuota output
 for f in TEST_OUTPUT.glob("*.pdf"): f.unlink(missing_ok=True)
@@ -407,14 +396,16 @@ check("F21-pre — Data picker stringa = '01/09/2026'",
       g.date_picker.get_string() == "01/09/2026")
 check("F21-pre — Reparto combo = 'PRODUZIONE'",
       g.department.get().upper() == "PRODUZIONE")
+check("F21-pre — Ruolo e Note: rimossi da UI (v2 richiesta utente)", True,
+      "SKIP: role/notes eliminati da UI e impostati come stringhe vuote")
 # recupero i templates selezionati COME FAREBBE generate() internamente
 deps = g._current_departments()
 sel = a.templates_for_department(g.templates, deps[0]) if deps else []
 filt = [t for t in sel if g.template_inclusion.get(t.path, True)]
 name = g.employee_name.get().strip()
 entry_date = g.date_picker.get_string()
-role_v = g.role.get().strip()
-notes_v = g.notes_widget.get("1.0", "end-1c").strip()
+role_v = ""
+notes_v = ""
 dept_tag = a.safe_file_part("+".join(deps))
 out_path = TEST_OUTPUT / f"dossier_{a.safe_file_part(name)}_{dept_tag}.pdf"
 check("F21-pre — 2 template selezionati (PROD 2 + TUTTI 1)", len(filt) == 2,
@@ -436,17 +427,11 @@ if out_path.exists():
           "Giuseppe Verdi" in full_txt)
     check("F21e — *data* → '01/09/2026' nel PDF",
           "01/09/2026" in full_txt)
-    # F21f/F21g: Ruolo e Note sono nella UI ma NON scritti nel PDF → BUG NOTO
-    ruolo_ui_ok = g.role.get() == "Operatore Specializzato"
-    note_ui_ok = "sicurezza" in g.notes_widget.get("1.0", "end-1c").lower()
-    check("F21f-UI — Campo Ruolo compilato correttamente nella UI", ruolo_ui_ok)
-    check("F21f-BUG — [BUG NOTO] Ruolo NON scritto nel PDF (parametro 'role' non usato in build_pdf)",
-          True,  # sempre info — è un bug documentato
-          "Trovato nel pdf=" + str("Operatore" in full_txt) + " → BUG: ruolo ignorato nella generazione PDF")
-    check("F21g-UI — Campo Note compilato correttamente nella UI", note_ui_ok)
-    check("F21g-BUG — [BUG NOTO] Note NON scritte nel PDF (parametro 'notes' non usato in build_pdf)",
-          True,  # info bug
-          "'sicurezza' in pdf=" + str("sicurezza" in full_txt.lower()) + " → BUG: note ignorate nella generazione PDF")
+    # F21f/F21g: Ruolo e Note RIMOSSI da UI in v2 (richiesta utente) — valori hardcoded ""
+    check("F21f — Ruolo: rimosso da UI e "" passato a build_pdf (richiesta utente v2)",
+          True, "SKIP: Ruolo eliminato — nessun template usava *ruolo* placeholder")
+    check("F21g — Note: rimosse da UI e "" passato a build_pdf (richiesta utente v2)",
+          True, "SKIP: Note eliminate — nessun template usava *note* placeholder")
     check("F25 — Copie multiple (Pagine >= 3): PROD 2 + TUTTI 1",
           len(rdr.pages) >= 3, f"pagine={len(rdr.pages)}")
     check("F26 — Template TUTTI: 'REGOLAMENTO' o 'GENERALE' presenti",
@@ -527,8 +512,8 @@ if batch_win:
     check("F23b — Treeview batch trovato", pv is not None)
     if pv is not None:
         cols = list(pv["columns"])
-        expected = {"nome", "data", "reparto", "ruolo", "note"}
-        check("F23c — 5 colonne batch (nome data reparto ruolo note)",
+        expected = {"nome", "data", "reparto"}
+        check("F23c — 3 colonne batch (nome data reparto) — ruolo/note rimossi v2",
               set(cols) == expected, f"cols={cols}")
         headings = [pv.heading(c, "text") for c in cols]
         check("F23d — Heading prima colonna 'Nome'", any(h == "Nome" for h in headings),

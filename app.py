@@ -1034,6 +1034,40 @@ def build_pdf(
         author="Formazioni PZZ",
     )
     story: list[object] = []
+        # --- COPERTINA ANAGRAFICA (solo portrait, salta se landscape per conservare impaginazione) ---
+    if not has_landscape_pdf:
+        cover_title = paragraph_text("Dossier Formazione", styles["cover_title"])
+        cover_subtitle = paragraph_text(
+            f"Documento di accompagnamento per la formazione individuale", styles["cover_subtitle"]
+        )
+        cover_rows_raw = [
+            ["Campo", "Valore"],
+            ["Nome e Cognome", employee_name],
+            ["Data Ingresso / Corso", entry_date],
+            ["Reparto/i", department],
+        ]
+        if role and role.strip():
+            cover_rows_raw.append(["Mansione / Ruolo", role.strip()])
+        if notes and notes.strip():
+            cover_rows_raw.append(["Note aggiuntive", notes.strip()])
+        cover_rows = []
+        for rr in cover_rows_raw:
+            cover_rows.append([paragraph_text(str(c), styles["body"] if i > 0 else "heading")
+                               if i == 0 and False else paragraph_text(str(c), styles["body"] if i else styles["meta"])
+                               for i, c in enumerate(rr)])
+        cover_meta = paragraph_text(
+            "Generato da Formazioni PZZ il: " + datetime.now().strftime("%d/%m/%Y %H:%M"),
+            styles["small"]
+        )
+        story.append(Spacer(1, 12 * mm))
+        story.append(cover_title)
+        story.append(cover_subtitle)
+        story.append(Spacer(1, 8 * mm))
+        story.append(_table_flowable(cover_rows, cover_rows_raw))
+        story.append(Spacer(1, 8 * mm))
+        story.append(cover_meta)
+        story.append(PageBreak())
+        # --- FINE COPERTINA ---
     story_cache_local: dict[Path, list[object]] = {}
     total_steps = max(1, len(expanded) + 1)
 
@@ -1263,11 +1297,17 @@ class DatePickerFrame(tk.Frame):
 
         for w in (self, self.day_cb, self.month_cb, self.year_cb):
             w.bind("<MouseWheel>", on_window)
-            # Unix
-            w.bind("<Button-4>",
-                   lambda e, d=-1: (step_cb(self._cb_under_mouse(e) or self.day_cb, d, e), "break"))
-            w.bind("<Button-5>",
-                   lambda e, d=+1: (step_cb(self._cb_under_mouse(e) or self.day_cb, d, e), "break"))
+            # Unix: helper inline per ritornare "break" correttamente (non tupla)
+            def _unix_up(e, _d=-1):
+                cb = self._cb_under_mouse(e) or self.day_cb
+                step_cb(cb, _d, e)
+                return "break"
+            def _unix_down(e, _d=+1):
+                cb = self._cb_under_mouse(e) or self.day_cb
+                step_cb(cb, _d, e)
+                return "break"
+            w.bind("<Button-4>", _unix_up)
+            w.bind("<Button-5>", _unix_down)
 
     def _cb_under_mouse(self, evt):
         try:
@@ -1376,7 +1416,6 @@ class FormazioniApp:
         self.template_dir = StringVar(value=self.settings.get("last_template_dir", str(DEFAULT_TEMPLATE_DIR)))
         self.output_dir = StringVar(value=self.settings.get("last_output_dir", str(DEFAULT_OUTPUT_DIR)))
         self.employee_name = StringVar()
-        self.role = StringVar()
         self.department = StringVar()
         self.auto_open = BooleanVar(value=True)
         self.multi_dept_mode = BooleanVar(value=False)
