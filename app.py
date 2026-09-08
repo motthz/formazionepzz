@@ -1806,6 +1806,13 @@ class FormazioniApp:
         )
         theme_switch.current(0 if self.theme.get() == "light" else 1)
         theme_switch.pack(side=LEFT, padx=(0, 18))
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(theme_switch)
+        except Exception:
+            pass
+
 
         tk.Label(row, text=self.tr("lbl_language") + "  ", bg=title_bg,
                  fg=self._style_colors["text_muted"],
@@ -1820,6 +1827,13 @@ class FormazioniApp:
         lang_combo = ttk.Combobox(row, values=labels, state="readonly", width=6)
         lang_combo.current(current_idx)
         lang_combo.pack(side=LEFT)
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(lang_combo)
+        except Exception:
+            pass
+
 
         def on_theme(_e=None):
             chosen = theme_switch.current()
@@ -1934,13 +1948,37 @@ class FormazioniApp:
 
         def _on_wheel(evt):
             if _is_in_local_widget(evt):
-                return
+                return "break"
             try:
                 if canvas_wrap.winfo_exists():
                     canvas_wrap.yview_scroll(int(-1 * (evt.delta / 120)), "units")
             except Exception:
                 pass
+            return "break"
+
+        def _on_wheel_up(_evt):
+            if _is_in_local_widget(_evt):
+                return "break"
+            try:
+                if canvas_wrap.winfo_exists():
+                    canvas_wrap.yview_scroll(-3, "units")
+            except Exception:
+                pass
+            return "break"
+
+        def _on_wheel_down(_evt):
+            if _is_in_local_widget(_evt):
+                return "break"
+            try:
+                if canvas_wrap.winfo_exists():
+                    canvas_wrap.yview_scroll(3, "units")
+            except Exception:
+                pass
+            return "break"
+
         canvas_wrap.bind_all("<MouseWheel>", _on_wheel, add="+")
+        canvas_wrap.bind_all("<Button-4>", _on_wheel_up, add="+")
+        canvas_wrap.bind_all("<Button-5>", _on_wheel_down, add="+")
 
         self._body = body = ttk.Frame(scrolled, style="App.TFrame", padding=(30, 6, 30, 10))
         body.pack(fill=BOTH, expand=True)
@@ -2073,12 +2111,26 @@ class FormazioniApp:
         name_entry = add_row(0, self.tr("lbl_name"),
             lambda parent: ttk.Entry(parent, textvariable=self.employee_name))
         self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(name_entry)
+        except Exception:
+            pass
+
 
         dp = add_row(1, self.tr("lbl_date"),
             lambda parent: DatePickerFrame(parent, self.language,
                                            bg=self._style_colors["card_body_bg"]))
         self.date_picker = dp
         self._add_tooltip(self.date_picker, lambda: self.tr("tt_date"))
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(self.date_picker)
+        except Exception:
+            pass
+
         for w in (self.date_picker.day_cb, self.date_picker.month_cb, self.date_picker.year_cb):
             self._add_tooltip(w, lambda: self.tr("tt_date"))
 
@@ -2120,6 +2172,13 @@ class FormazioniApp:
         people_tree.configure(yscrollcommand=p_sb.set)
         self._inline_batch_tree = people_tree
         self._inline_batch_rows: list[dict[str, str]] = []
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(self._inline_batch_tree)
+        except Exception:
+            pass
+
 
         actions = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
         actions.grid(row=3, column=0, columnspan=2, sticky="ew")
@@ -2403,6 +2462,13 @@ class FormazioniApp:
         self.department_combo.grid(row=0, column=0, sticky="ew")
         self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
         self._single_dept_wrap = single_wrap
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(self.department_combo)
+        except Exception:
+            pass
+
 
         multi_wrap = tk.Frame(dept_frame, bg=self._style_colors["card_body_bg"])
         multi_wrap.grid(row=2, column=0, columnspan=2, sticky="ew")
@@ -2461,6 +2527,13 @@ class FormazioniApp:
         tree_sb.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=tree_sb.set)
         self.tree.bind("<Button-1>", self._on_tree_click)
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(self.tree)
+        except Exception:
+            pass
+
         self.tree.bind("<space>", lambda _e: self._toggle_focused_row())
         self._add_tooltip(self.tree, lambda: self.tr("tt_include"))
 
@@ -3073,6 +3146,13 @@ class FormazioniApp:
         top_row = tk.Frame(body, bg=self._style_colors["card_body_bg"])
         top_row.pack(fill=X, pady=(0, 10))
         ttk.Entry(top_row, textvariable=path_var).pack(side=LEFT, fill=X, expand=True, padx=(0, 10))
+        try:
+            _reg = getattr(self, "_register_local_wheel", None)
+            if callable(_reg):
+                _reg(top_row)
+        except Exception:
+            pass
+
         tree_holder = tk.Frame(body, bg=self._style_colors["card_body_bg"])
         tree_holder.pack(fill=BOTH, expand=True, pady=(0, 12))
         tree_holder.rowconfigure(0, weight=1)
