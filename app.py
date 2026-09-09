@@ -186,7 +186,7 @@ def _set_app_icon(root) -> None:
     except Exception:
         pass
 
-DEFAULT_LANG = "it"
+DEFAULT_LANG = "en"
 DEFAULT_THEME = "light"
 MONTH_KEYS = (
     "dp_jan", "dp_feb", "dp_mar", "dp_apr", "dp_may", "dp_jun",
@@ -679,7 +679,7 @@ def _merge_pdfs(output_path: Path, pdf_paths: list[Path]) -> None:
         writer.write(handle)
 
 
-def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
+def _remove_trailing_blank_pages(pdf_path: Path, dest_dir: Path | None = None) -> Path:
     from pypdf import PdfReader, PdfWriter
 
     reader = PdfReader(str(pdf_path))
@@ -697,10 +697,11 @@ def _remove_trailing_blank_pages(pdf_path: Path) -> Path:
             break
         last_page -= 1
     pages = reader.pages[:last_page]
-    if len(pages) == 1:
+    if len(pages) == len(reader.pages):
         return pdf_path
 
-    trimmed = pdf_path.with_name(f"{pdf_path.stem}-trimmed.pdf")
+    target_dir = dest_dir if dest_dir is not None else Path(tempfile.gettempdir())
+    trimmed = target_dir / f"{pdf_path.stem}-trimmed-{os.getpid()}-{hashlib.md5(str(pdf_path).encode()).hexdigest()[:8]}.pdf"
     writer = PdfWriter()
     for page in pages:
         writer.add_page(page)
@@ -756,9 +757,9 @@ def _build_pdf_native(
             progress_cb(step, total_steps)
 
         pages = [
-            _remove_trailing_blank_pages(template.path)
+            _remove_trailing_blank_pages(template.path, temp_dir)
             if template.path.suffix.lower() == ".pdf"
-            else _remove_trailing_blank_pages(converted[prepared[template.path]])
+            else _remove_trailing_blank_pages(converted[prepared[template.path]], temp_dir)
             for template, _copy_number in expanded
         ]
         _merge_pdfs(output_path, pages)
@@ -1239,7 +1240,8 @@ class DatePickerFrame(tk.Frame):
         self.columnconfigure(1, weight=0)
         self.columnconfigure(2, weight=0)
         today = date.today()
-        year_values = [str(y) for y in range(today.year - 5, today.year + 6)]
+        end_year = max(today.year + 6, 2051)
+        year_values = [str(y) for y in range(today.year - 5, end_year)]
         self.day_cb = ttk.Combobox(self, values=[str(d) for d in range(1, 32)],
                                    width=4, state="readonly")
         self.month_cb = ttk.Combobox(self, values=[self.language.get(k, k) for k in MONTH_KEYS],
@@ -2361,9 +2363,14 @@ class FormazioniApp:
                     nome = (row.get("Nome") or "").strip()
                     data = (row.get("Data") or "").strip()
                     reparto_raw = (row.get("Reparto") or "").strip()
-                    reparto_list = [d for d in reparto_raw.split("+") if d]
+                    reparto_list = [d.strip().upper() for d in reparto_raw.split("+") if d.strip()]
                     if not reparto_list:
-                        reparto_list = [dept_opts.pop() if len(dept_opts) == 1 else ""]
+                        if len(dept_opts) == 1:
+                            reparto_list = [next(iter(dept_opts))]
+                        else:
+                            skip += 1
+                            details.append(s_tr("bat_skip_dept", i=idx, d=reparto_raw or ""))
+                            continue
                     note = ""
                     ruolo = ""
                     if not nome:
@@ -2375,36 +2382,37 @@ class FormazioniApp:
                         skip += 1
                         details.append(s_tr("bat_skip_date", i=idx))
                         continue
-                    for single_dept in reparto_list or [reparto_raw.upper()]:
-                        dept_ok = (single_dept and single_dept.upper() in dept_opts)
-                        if not dept_ok:
-                            skip += 1
-                            details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
-                            continue
-                        sel = templates_for_department(tpl_snap, single_dept.upper())
-                        filt = [t for t in sel if inc_snap.get(t.path, True)]
-                        if not filt:
-                            skip += 1
-                            details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
-                            continue
+                    invalid_depts = [d for d in reparto_list if d not in dept_opts]
+                    if invalid_depts:
+                        skip += 1
+                        details.append(s_tr("bat_skip_dept", i=idx, d=", ".join(invalid_depts)))
+                        continue
+                    sel = templates_for_departments(tpl_snap, reparto_list)
+                    filt = [t for t in sel if inc_snap.get(t.path, True)]
+                    if not filt:
+                        skip += 1
+                        for d in reparto_list:
+                            details.append(s_tr("bat_skip_dept", i=idx, d=d))
+                        continue
+                    dept_tag = safe_file_part("+".join(reparto_list))
+                    out_file = out_dir_path / (
+                        f"dossier_{safe_file_part(nome)}_{dept_tag}.pdf"
+                    )
+                    c = 2
+                    while out_file.exists():
                         out_file = out_dir_path / (
-                            f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}.pdf"
+                            f"dossier_{safe_file_part(nome)}_{dept_tag}_{c}.pdf"
                         )
-                        c = 2
-                        while out_file.exists():
-                            out_file = out_dir_path / (
-                                f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}_{c}.pdf"
-                            )
-                            c += 1
-                        try:
-                            build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                      single_dept.upper(), ruolo, note, filt)
-                            self._save_history(out_file, nome, single_dept.upper(), len(filt))
-                            ok += 1
-                            details.append(f"#{idx} OK · {out_file.name}")
-                        except Exception as exc:  # noqa: BLE001
-                            fail += 1
-                            details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
+                        c += 1
+                    try:
+                        build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
+                                  "+".join(reparto_list), ruolo, note, filt)
+                        self._save_history(out_file, nome, "+".join(reparto_list), len(filt))
+                        ok += 1
+                        details.append(f"#{idx} OK · {out_file.name}")
+                    except Exception as exc:  # noqa: BLE001
+                        fail += 1
+                        details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
                 hashes = dict(saved_snap)
                 for t in tpl_snap:
                     try:
@@ -2559,15 +2567,11 @@ class FormazioniApp:
         gen_btn = ttk.Button(gen_frame, text=self.tr("btn_generate"),
                              style="Primary.TButton", command=self.generate)
         gen_btn.pack(side=RIGHT, ipadx=18, ipady=5)
-        batch_btn = ttk.Button(gen_frame, text=self.tr("btn_batch"),
-                               style="Secondary.TButton", command=self.open_batch_window)
-        batch_btn.pack(side=RIGHT, padx=(0, 10), ipady=5)
         tk.Label(gen_frame, text=self.tr("lbl_generate_hint"),
                  bg=self._style_colors["card_body_bg"], fg=self._style_colors["text_muted"],
                  font=("Segoe UI", 8), anchor="w",
                  ).pack(side=LEFT, padx=(4, 0))
         self._add_tooltip(gen_btn, lambda: self.tr("tt_generate"))
-        self._add_tooltip(batch_btn, lambda: self.tr("tt_batch"))
 
         help_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
         help_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -3321,6 +3325,38 @@ class FormazioniApp:
                 continue
         return None
 
+    def _normalize_column_header(self, c: str) -> str:
+        c_norm = str(c).strip().lower().replace("  ", " ")
+        if any(k in c_norm for k in ("nome", "cognome", "name", "full name", "dipendente", "employee", "persona")):
+            return "Nome"
+        if any(k in c_norm for k in ("data", "date", "ingresso", "entrata", "entry")):
+            return "Data"
+        if any(k in c_norm for k in ("reparto", "department", "dipartimento", "settore", "area", "ufficio")):
+            return "Reparto"
+        if any(k in c_norm for k in ("ruolo", "role", "mansione", "qualifica", "position", "job")):
+            return "Ruolo"
+        if any(k in c_norm for k in ("note", "notes", "commento", "commenti", "comment", "osservazioni")):
+            return "Note"
+        return c
+
+    def _coerce_date_value(self, val) -> str:
+        if val is None:
+            return ""
+        if isinstance(val, datetime):
+            return val.strftime("%d/%m/%Y")
+        if isinstance(val, date):
+            return val.strftime("%d/%m/%Y")
+        s = str(val).strip()
+        if not s:
+            return ""
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S",
+                    "%d/%m/%Y %H:%M", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt).strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+        return s
+
     def _parse_batch_file(self, p: Path) -> list[dict[str, str]]:
         suffix = p.suffix.lower()
         if suffix in {".xlsx", ".xls"}:
@@ -3334,27 +3370,17 @@ class FormazioniApp:
             if not raw_rows:
                 return []
             header = [str(c).strip().lower() if c is not None else "" for c in raw_rows[0]]
-            norm = []
-            for c in header:
-                if c in {"nome", "name"}:
-                    norm.append("Nome")
-                elif c in {"data", "date"}:
-                    norm.append("Data")
-                elif c in {"reparto", "department", "dipartimento"}:
-                    norm.append("Reparto")
-                elif c in {"ruolo", "role", "mansione"}:
-                    norm.append("Ruolo")
-                elif c in {"note", "notes"}:
-                    norm.append("Note")
-                else:
-                    norm.append(c)
+            norm = [self._normalize_column_header(c) for c in header]
             out: list[dict[str, str]] = []
             for r in raw_rows[1:]:
                 if all(v is None or str(v).strip() == "" for v in r):
                     continue
                 obj: dict[str, str] = {}
                 for key, val in zip(norm, r):
-                    obj[key] = "" if val is None else str(val)
+                    if key == "Data":
+                        obj[key] = self._coerce_date_value(val)
+                    else:
+                        obj[key] = "" if val is None else str(val).strip()
                 out.append(obj)
             return out
         # CSV
@@ -3364,27 +3390,20 @@ class FormazioniApp:
         if not rows_list:
             return []
         header = [c.strip().lower() for c in rows_list[0]]
-        norm = []
-        for c in header:
-            if c in {"nome", "name"}:
-                norm.append("Nome")
-            elif c in {"data", "date"}:
-                norm.append("Data")
-            elif c in {"reparto", "department", "dipartimento"}:
-                norm.append("Reparto")
-            elif c in {"ruolo", "role", "mansione"}:
-                norm.append("Ruolo")
-            elif c in {"note", "notes"}:
-                norm.append("Note")
-            else:
-                norm.append(c)
+        norm = [self._normalize_column_header(c) for c in header]
         out = []
         for r in rows_list[1:]:
             if all(v.strip() == "" for v in r):
                 continue
             while len(r) < len(norm):
                 r.append("")
-            out.append({k: v for k, v in zip(norm, r)})
+            obj = {}
+            for k, v in zip(norm, r):
+                if k == "Data":
+                    obj[k] = self._coerce_date_value(v)
+                else:
+                    obj[k] = v.strip()
+            out.append(obj)
         return out
 
     # ---------------------- History ---------------------------------------
