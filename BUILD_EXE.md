@@ -20,11 +20,31 @@ pip install -r requirements.txt
 pip install pyinstaller
 ```
 
+### Logo e icona (opzionale)
+
+Il logo (`assets/app_icon.ico`, `assets/app_icon.png`, `assets/logo_header.png`) è già incluso.
+Per rigenerarlo dopo aver modificato colori/forme in `tools/genera_logo.py` (richiede Pillow):
+
+```bash
+python tools/genera_logo.py
+```
+
+L'icona `.ico` viene incorporata automaticamente nell'eseguibile dal file `.spec`.
+
 ### 2. Build
 
 ```bash
 # Rigenerare l'eseguibile
 python -m PyInstaller FormazioniPZZ.spec
+```
+
+### 2b. Programma di installazione
+
+Dopo aver compilato l'eseguibile, crea il setup (installa per l'utente corrente e mette il collegamento sul desktop):
+
+```bash
+python -m PyInstaller --noconfirm installer/installer.spec
+copy dist\FormazioniPZZ_Setup.exe release\
 ```
 
 ### 3. Copia

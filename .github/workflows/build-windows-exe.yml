@@ -27,22 +27,29 @@ jobs:
       - name: Build executable
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ.spec
 
-      - name: Replace release executable
+      - name: Build installer
+        run: python -m PyInstaller --clean --noconfirm installer/installer.spec
+
+      - name: Replace release executables
         shell: pwsh
-        run: Copy-Item -Force dist/FormazioniPZZ.exe release/FormazioniPZZ.exe
+        run: |
+          Copy-Item -Force dist/FormazioniPZZ.exe release/FormazioniPZZ.exe
+          Copy-Item -Force dist/FormazioniPZZ_Setup.exe release/FormazioniPZZ_Setup.exe
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: FormazioniPZZ-windows
-          path: release/FormazioniPZZ.exe
+          path: |
+            release/FormazioniPZZ.exe
+            release/FormazioniPZZ_Setup.exe
 
       - name: Commit updated executable
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add release/FormazioniPZZ.exe
+          git add release/FormazioniPZZ.exe release/FormazioniPZZ_Setup.exe
           if (git diff --cached --quiet) {
             Write-Host "Executable unchanged"
             exit 0

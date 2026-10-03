@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import contextlib
 import copy as _copy_mod
 import csv
 import ctypes
@@ -38,14 +39,12 @@ from xml.sax.saxutils import escape
 from docx import Document
 from openpyxl import load_workbook
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    HRFlowable,
     KeepInFrame,
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -81,13 +80,13 @@ LANG_DIR = APP_DIR / "lang"
 ICON_DIR = APP_DIR / "assets"
 ICON_ICO = ICON_DIR / "app_icon.ico"
 ICON_PNG = ICON_DIR / "app_icon.png"
+LOGO_HEADER_PNG = ICON_DIR / "logo_header.png"
 
 
 def _build_in_memory_icon(width=32, height=32, bg1=(12, 34, 53), bg2=(21, 58, 82),
                           gold=(217, 161, 63)):
     """Build a pure-Python in-memory icon (RGBA) so no external deps needed."""
     pixels = bytearray()
-    cx = cy = (width - 1) / 2.0
     for y in range(height):
         for x in range(width):
             # card corners (outer/inner rounded)
@@ -153,10 +152,19 @@ def _png_from_rgba(rgba: bytes, w: int, h: int) -> bytes:
 
 def _set_app_icon(root) -> None:
     """Try to set root window icon using multiple strategies."""
-    # 1) Try .ico file on disk
+    # Su Windows un AppUserModelID dedicato fa usare alla taskbar l'icona
+    # dell'app invece di quella di python.exe (avvio da sorgente).
+    if os.name == "nt":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PZZ.FormazioniPZZ")
+        except Exception:
+            pass
+    # 1) Try .ico file on disk (multi-risoluzione: nitida a ogni dimensione)
     try:
         if ICON_ICO.exists():
             root.iconbitmap(default=str(ICON_ICO))
+            if os.name == "nt":
+                return
     except Exception:
         pass
     # 2) Try PNG file (preferred fallback) via PhotoImage
@@ -183,6 +191,22 @@ def _set_app_icon(root) -> None:
             root._pzz_icon_photo_big = img2
         except Exception:
             pass
+    except Exception:
+        pass
+
+
+def _set_titlebar_dark(root, dark: bool) -> None:
+    """Allinea la barra del titolo di Windows 10/11 al tema scelto."""
+    if os.name != "nt":
+        return
+    try:
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (nuovo / pre-20H1)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                break
     except Exception:
         pass
 
@@ -373,6 +397,8 @@ def discover_templates(folder: Path) -> tuple[list[TemplateFile], list[Path]]:
     if not folder.exists():
         return valid, ignored
     for path in sorted(folder.rglob("*")):
+        if TRASH_DIR_NAME in path.relative_to(folder).parts:
+            continue
         if path.is_file() and path.name.lower() != "readme.md":
             template = parse_template(path)
             if template and template.copies > 0:
@@ -445,6 +471,49 @@ def templates_for_departments(
     )
 
 
+# --------------------------- GESTIONE MODULI ------------------------------
+
+TRASH_DIR_NAME = "_moduli_eliminati"
+_INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+
+
+def suggest_template_code(department: str) -> str:
+    letters = re.sub(r"[^A-Za-z]", "", department).upper()
+    return letters[:3] if len(letters) >= 2 else "GEN"
+
+
+def build_template_filename(department: str, copies: int, code: str, suffix: str) -> str:
+    return f"{department.strip().upper()}_{int(copies)}_{code.strip().upper()}{suffix.lower()}"
+
+
+def validate_template_fields(department: str, copies: str, code: str) -> str | None:
+    """Restituisce la chiave di traduzione dell'errore, oppure None se i campi sono validi."""
+    dept = department.strip()
+    if not dept:
+        return "tm_err_dept"
+    if _INVALID_FILENAME_CHARS.search(dept):
+        return "tm_err_dept_chars"
+    try:
+        if int(copies) < 1:
+            return "tm_err_copies"
+    except (TypeError, ValueError):
+        return "tm_err_copies"
+    if not re.fullmatch(r"[A-Za-z]{2,5}", code.strip()):
+        return "tm_err_code"
+    return None
+
+
+def move_template_to_trash(path: Path, folder: Path) -> Path:
+    trash = folder / TRASH_DIR_NAME
+    trash.mkdir(parents=True, exist_ok=True)
+    target = trash / path.name
+    if target.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = trash / f"{path.stem}__{stamp}{path.suffix}"
+    shutil.move(str(path), str(target))
+    return target
+
+
 def replace_placeholders(value: object, employee_name: str, entry_date: str) -> object:
     if not isinstance(value, str):
         return value
@@ -512,6 +581,45 @@ def _office_command() -> str | None:
     return None
 
 
+@contextlib.contextmanager
+def _com_apartment():
+    """COM va inizializzato in ogni thread che usa Word/Excel (la generazione gira in un worker)."""
+    import pythoncom  # type: ignore[import-not-found]
+
+    pythoncom.CoInitialize()
+    try:
+        yield
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def _convert_with_ms_office(source: Path, converted: Path, extension: str) -> None:
+    import win32com.client  # type: ignore[import-not-found]
+
+    if source.suffix.lower() in {".doc", ".docx"}:
+        word = win32com.client.DispatchEx("Word.Application")
+        document = word.Documents.Open(str(source.resolve()))
+        try:
+            if extension == "pdf":
+                document.ExportAsFixedFormat(str(converted.resolve()), 17)
+            else:
+                document.SaveAs2(str(converted.resolve()), FileFormat=16)
+        finally:
+            document.Close(False)
+            word.Quit()
+    else:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        workbook = excel.Workbooks.Open(str(source.resolve()))
+        try:
+            if extension == "pdf":
+                workbook.ExportAsFixedFormat(0, str(converted.resolve()))
+            else:
+                workbook.SaveAs(str(converted.resolve()), FileFormat=51)
+        finally:
+            workbook.Close(False)
+            excel.Quit()
+
+
 def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path:
     command = _office_command()
     if command is None:
@@ -522,30 +630,8 @@ def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path
     output_dir.mkdir(parents=True, exist_ok=True)
     converted = output_dir / f"{source.stem}.{extension}"
     if command == "microsoft-office":
-        import win32com.client  # type: ignore[import-not-found]
-
-        if source.suffix.lower() in {".doc", ".docx"}:
-            word = win32com.client.DispatchEx("Word.Application")
-            document = word.Documents.Open(str(source.resolve()))
-            try:
-                if extension == "pdf":
-                    document.ExportAsFixedFormat(str(converted.resolve()), 17)
-                else:
-                    document.SaveAs2(str(converted.resolve()), FileFormat=16)
-            finally:
-                document.Close(False)
-                word.Quit()
-        else:
-            excel = win32com.client.DispatchEx("Excel.Application")
-            workbook = excel.Workbooks.Open(str(source.resolve()))
-            try:
-                if extension == "pdf":
-                    workbook.ExportAsFixedFormat(0, str(converted.resolve()))
-                else:
-                    workbook.SaveAs(str(converted.resolve()), FileFormat=51)
-            finally:
-                workbook.Close(False)
-                excel.Quit()
+        with _com_apartment():
+            _convert_with_ms_office(source, converted, extension)
         if not converted.exists():
             raise RuntimeError(f"Conversione Microsoft Office fallita per {source.name}")
         return converted
@@ -573,6 +659,44 @@ def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path
     return converted
 
 
+def _convert_with_ms_office_batch(
+    sources: list[Path], output_dir: Path, extension: str
+) -> dict[Path, Path]:
+    import win32com.client  # type: ignore[import-not-found]
+
+    applications = {}
+    converted: dict[Path, Path] = {}
+    try:
+        for source in sources:
+            kind = "word" if source.suffix.lower() == ".docx" else "excel"
+            if kind not in applications:
+                applications[kind] = (
+                    win32com.client.DispatchEx("Word.Application")
+                    if kind == "word"
+                    else win32com.client.DispatchEx("Excel.Application")
+                )
+            application = applications[kind]
+            target = output_dir / f"{source.stem}.{extension}"
+            document = (
+                application.Documents.Open(str(source.resolve()))
+                if kind == "word"
+                else application.Workbooks.Open(str(source.resolve()))
+            )
+            try:
+                if extension == "pdf":
+                    if kind == "word":
+                        document.ExportAsFixedFormat(str(target.resolve()), 17)
+                    else:
+                        document.ExportAsFixedFormat(0, str(target.resolve()))
+            finally:
+                document.Close(False)
+            converted[source] = target
+    finally:
+        for application in applications.values():
+            application.Quit()
+    return converted
+
+
 def _convert_with_office_batch(
     sources: list[Path], output_dir: Path, extension: str
 ) -> dict[Path, Path]:
@@ -583,39 +707,8 @@ def _convert_with_office_batch(
         raise RuntimeError("Motore Office non disponibile per la conversione dei template.")
     output_dir.mkdir(parents=True, exist_ok=True)
     if command == "microsoft-office":
-        import win32com.client  # type: ignore[import-not-found]
-
-        applications = {}
-        converted: dict[Path, Path] = {}
-        try:
-            for source in sources:
-                kind = "word" if source.suffix.lower() == ".docx" else "excel"
-                if kind not in applications:
-                    applications[kind] = (
-                        win32com.client.DispatchEx("Word.Application")
-                        if kind == "word"
-                        else win32com.client.DispatchEx("Excel.Application")
-                    )
-                application = applications[kind]
-                target = output_dir / f"{source.stem}.{extension}"
-                document = (
-                    application.Documents.Open(str(source.resolve()))
-                    if kind == "word"
-                    else application.Workbooks.Open(str(source.resolve()))
-                )
-                try:
-                    if extension == "pdf":
-                        if kind == "word":
-                            document.ExportAsFixedFormat(str(target.resolve()), 17)
-                        else:
-                            document.ExportAsFixedFormat(0, str(target.resolve()))
-                finally:
-                    document.Close(False)
-                converted[source] = target
-        finally:
-            for application in applications.values():
-                application.Quit()
-        return converted
+        with _com_apartment():
+            return _convert_with_ms_office_batch(sources, output_dir, extension)
 
     profile = output_dir / "office-profile"
     result = subprocess.run(
@@ -756,7 +849,15 @@ def _build_pdf_native(
         if progress_cb:
             progress_cb(step, total_steps)
 
-        pages = [
+        # Stessa regola del motore ReportLab: niente copertina se ci sono PDF orizzontali
+        has_landscape_pdf = any(
+            template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
+            for template, _ in expanded
+        )
+        cover = [] if has_landscape_pdf else [_build_cover_pdf(
+            temp_dir / "cover.pdf", employee_name, entry_date, department, role, notes
+        )]
+        pages = cover + [
             _remove_trailing_blank_pages(template.path, temp_dir)
             if template.path.suffix.lower() == ".pdf"
             else _remove_trailing_blank_pages(converted[prepared[template.path]], temp_dir)
@@ -990,6 +1091,63 @@ def pdf_story(
     return story or [paragraph_text("Documento PDF senza contenuto testuale.", styles["muted"])]
 
 
+def _cover_story(
+    styles: dict[str, ParagraphStyle],
+    employee_name: str,
+    entry_date: str,
+    department: str,
+    role: str,
+    notes: str,
+) -> list[object]:
+    cover_rows_raw = [
+        ["Campo", "Valore"],
+        ["Nome e Cognome", employee_name],
+        ["Data Ingresso / Corso", entry_date],
+        ["Reparto/i", department],
+    ]
+    if role and role.strip():
+        cover_rows_raw.append(["Mansione / Ruolo", role.strip()])
+    if notes and notes.strip():
+        cover_rows_raw.append(["Note aggiuntive", notes.strip()])
+    cover_rows = [
+        [paragraph_text(str(c), styles["body"] if i else styles["meta"])
+         for i, c in enumerate(rr)]
+        for rr in cover_rows_raw
+    ]
+    return [
+        Spacer(1, 12 * mm),
+        paragraph_text("Dossier Formazione", styles["cover_title"]),
+        paragraph_text("Documento di accompagnamento per la formazione individuale",
+                       styles["cover_subtitle"]),
+        Spacer(1, 8 * mm),
+        _table_flowable(cover_rows, cover_rows_raw),
+        Spacer(1, 8 * mm),
+        paragraph_text(
+            "Generato da Formazioni PZZ il: " + datetime.now().strftime("%d/%m/%Y %H:%M"),
+            styles["small"],
+        ),
+    ]
+
+
+def _build_cover_pdf(
+    output_path: Path,
+    employee_name: str,
+    entry_date: str,
+    department: str,
+    role: str,
+    notes: str,
+) -> Path:
+    doc = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        rightMargin=14 * mm, leftMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm,
+        title=f"Dossier formazione - {employee_name}",
+        author="Formazioni PZZ",
+    )
+    doc.build(_cover_story(make_styles(), employee_name, entry_date, department, role, notes))
+    return output_path
+
+
 def build_pdf(
     output_path: Path,
     employee_name: str,
@@ -1011,11 +1169,18 @@ def build_pdf(
         template.path.suffix.lower() in {".doc", ".xls"}
         for template, _ in expanded
     )
-    if _office_command() and needs_legacy_office:
-        return _build_pdf_native(
-            output_path, employee_name, entry_date, department, role, notes, expanded,
-            progress_cb=progress_cb,
-        )
+    if _office_command():
+        # Il motore Office conserva il layout originale dei template (loghi, tabelle, immagini)
+        try:
+            return _build_pdf_native(
+                output_path, employee_name, entry_date, department, role, notes, expanded,
+                progress_cb=progress_cb,
+            )
+        except Exception:
+            if needs_legacy_office:
+                raise
+            # .doc/.xls richiedono Office; per gli altri formati si ripiega su ReportLab
+            traceback.print_exc()
     has_landscape_pdf = any(
         template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
         for template, _ in expanded
@@ -1035,40 +1200,10 @@ def build_pdf(
         author="Formazioni PZZ",
     )
     story: list[object] = []
-        # --- COPERTINA ANAGRAFICA (solo portrait, salta se landscape per conservare impaginazione) ---
+    # Copertina solo in portrait: con PDF landscape si conserva l'impaginazione originale
     if not has_landscape_pdf:
-        cover_title = paragraph_text("Dossier Formazione", styles["cover_title"])
-        cover_subtitle = paragraph_text(
-            f"Documento di accompagnamento per la formazione individuale", styles["cover_subtitle"]
-        )
-        cover_rows_raw = [
-            ["Campo", "Valore"],
-            ["Nome e Cognome", employee_name],
-            ["Data Ingresso / Corso", entry_date],
-            ["Reparto/i", department],
-        ]
-        if role and role.strip():
-            cover_rows_raw.append(["Mansione / Ruolo", role.strip()])
-        if notes and notes.strip():
-            cover_rows_raw.append(["Note aggiuntive", notes.strip()])
-        cover_rows = []
-        for rr in cover_rows_raw:
-            cover_rows.append([paragraph_text(str(c), styles["body"] if i > 0 else "heading")
-                               if i == 0 and False else paragraph_text(str(c), styles["body"] if i else styles["meta"])
-                               for i, c in enumerate(rr)])
-        cover_meta = paragraph_text(
-            "Generato da Formazioni PZZ il: " + datetime.now().strftime("%d/%m/%Y %H:%M"),
-            styles["small"]
-        )
-        story.append(Spacer(1, 12 * mm))
-        story.append(cover_title)
-        story.append(cover_subtitle)
-        story.append(Spacer(1, 8 * mm))
-        story.append(_table_flowable(cover_rows, cover_rows_raw))
-        story.append(Spacer(1, 8 * mm))
-        story.append(cover_meta)
+        story.extend(_cover_story(styles, employee_name, entry_date, department, role, notes))
         story.append(PageBreak())
-        # --- FINE COPERTINA ---
     story_cache_local: dict[Path, list[object]] = {}
     total_steps = max(1, len(expanded) + 1)
 
@@ -1474,9 +1609,10 @@ class FormazioniApp:
     def _apply_theme_root(self):
         theme = self.theme.get()
         if theme == "dark":
-            self.root.configure(bg="#0e1a22")
+            self.root.configure(bg="#0b141b")
         else:
-            self.root.configure(bg="#eef3f3")
+            self.root.configure(bg="#f0f4f6")
+        _set_titlebar_dark(self.root, theme == "dark")
 
     def _configure_style(self):
         dark = self.theme.get() == "dark"
@@ -1487,19 +1623,19 @@ class FormazioniApp:
             pass
 
         if dark:
-            app_bg = "#0e1a22"
-            card_bg = "#17242c"
-            card_body_bg = "#17242c"
-            sh1 = "#060d11"
-            sh2 = "#0a171d"
-            text = "#eaf0f2"
-            text_muted = "#95adb6"
-            gold = "#d9a13f"
-            accent_bg = "#07131b"
-            accent_fg = "#eaf0f2"
-            title_bg = "#07131b"
-            title_fg = "#eaf0f2"
-            subtitle_fg = "#95adb6"
+            app_bg = "#0b141b"
+            card_bg = "#13202a"
+            card_body_bg = "#13202a"
+            sh1 = "#060c10"
+            sh2 = "#1f303b"
+            text = "#e8eff2"
+            text_muted = "#8fa7b1"
+            gold = "#e0a640"
+            accent_bg = "#08121a"
+            accent_fg = "#e8eff2"
+            title_bg = "#08121a"
+            title_fg = "#f4f8fa"
+            subtitle_fg = "#8fa7b1"
             section_bg = card_bg
             section_fg = text
             accent_label_bg = card_bg
@@ -1508,82 +1644,100 @@ class FormazioniApp:
             muted_fg = text_muted
             appmuted_bg = app_bg
             appmuted_fg = text_muted
-            count_bg = "#0f3b38"
-            count_fg = "#b2ece2"
+            count_bg = "#10393a"
+            count_fg = "#9fe3d8"
             secure_bg = count_bg
             secure_fg = count_fg
-            primary_bg = "#2a8e8e"
-            primary_fg = "#001414"
-            secondary_bg = "#233440"
+            primary_bg = "#2aa19c"
+            primary_fg = "#03201f"
+            primary_hover = "#36b8b2"
+            primary_press = "#238a86"
+            secondary_bg = "#1f303b"
             secondary_fg = text
+            secondary_hover = "#2a3f4c"
+            secondary_press = "#35505f"
             accent_btn_bg = gold
             accent_btn_fg = "#2a1a00"
-            field_bg = "#0e1a22"
+            field_bg = "#0f1a22"
             field_fg = text
-            border = "#2f4851"
-            focus = "#2a8e8e"
+            border = "#2a3d48"
+            focus = "#2aa19c"
             tree_bg = card_bg
             tree_field = card_bg
             tree_fg = text
-            tree_head_bg = "#2a8e8e"
-            tree_head_fg = "#001414"
-            tree_sel_bg = "#1d6a6a"
+            tree_head_bg = "#1a2a34"
+            tree_head_fg = "#a9c3cc"
+            tree_head_hover = "#223744"
+            tree_sel_bg = "#1d4d4c"
             tree_sel_fg = text
-            scroll_bg = "#2f4851"
-            scroll_trough = "#0e1a22"
+            scroll_bg = "#2a3d48"
+            scroll_trough = card_bg
             check_bg = card_bg
             check_fg = text
-            gold_bg = "#3d2f00"
+            gold_bg = "#3a2a08"
             gold_fg = gold
+            row_even = "#172631"
+            row_tutti = "#33280c"
+            row_modified = "#4a3c05"
+            row_new = "#12361f"
         else:
-            app_bg = "#eef3f3"
+            app_bg = "#f0f4f6"
             card_bg = "#ffffff"
             card_body_bg = "#ffffff"
-            sh1 = "#dce4e5"
-            sh2 = "#e6ecec"
-            text = "#0f2a36"
-            text_muted = "#56707a"
-            gold = "#d9a13f"
-            accent_bg = "#0a2235"
+            sh1 = "#d5dfe4"
+            sh2 = "#e6edf0"
+            text = "#11293a"
+            text_muted = "#5b7280"
+            gold = "#e0a640"
+            accent_bg = "#0b2a3d"
             accent_fg = "#ffffff"
-            title_bg = "#0a2235"
+            title_bg = "#0b2a3d"
             title_fg = "#ffffff"
-            subtitle_fg = "#b7d0d8"
+            subtitle_fg = "#bcd5dd"
             section_bg = card_bg
-            section_fg = "#0f2a36"
+            section_fg = text
             accent_label_bg = card_bg
-            accent_label_fg = gold
+            accent_label_fg = "#c08a26"
             muted_bg = card_bg
             muted_fg = text_muted
             appmuted_bg = app_bg
             appmuted_fg = text_muted
-            count_bg = "#e3f1ee"
-            count_fg = "#1c6262"
+            count_bg = "#e2f3f0"
+            count_fg = "#17706b"
             secure_bg = count_bg
             secure_fg = count_fg
-            primary_bg = "#2a8e8e"
+            primary_bg = "#1f8a87"
             primary_fg = "#ffffff"
-            secondary_bg = "#eaf0f0"
-            secondary_fg = "#0f2a36"
+            primary_hover = "#187370"
+            primary_press = "#125a58"
+            secondary_bg = "#edf2f4"
+            secondary_fg = text
+            secondary_hover = "#dfe8eb"
+            secondary_press = "#cfdce0"
             accent_btn_bg = gold
             accent_btn_fg = "#2a1a00"
-            field_bg = "#f6fafb"
-            field_fg = "#0f2a36"
-            border = "#cfe1e4"
-            focus = "#2a8e8e"
+            field_bg = "#f8fafb"
+            field_fg = text
+            border = "#d3dee3"
+            focus = "#1f8a87"
             tree_bg = "#ffffff"
             tree_field = "#ffffff"
-            tree_fg = "#0f2a36"
-            tree_head_bg = "#1c6262"
-            tree_head_fg = "#ffffff"
-            tree_sel_bg = "#2a8e8e"
-            tree_sel_fg = "#ffffff"
-            scroll_bg = "#cfe1e4"
-            scroll_trough = "#f2f7f7"
+            tree_fg = text
+            tree_head_bg = "#eef4f5"
+            tree_head_fg = "#33505c"
+            tree_head_hover = "#e1ebed"
+            tree_sel_bg = "#cdeae6"
+            tree_sel_fg = text
+            scroll_bg = "#c9d6db"
+            scroll_trough = "#f3f6f8"
             check_bg = card_bg
-            check_fg = "#0f2a36"
-            gold_bg = "#fbf0dc"
-            gold_fg = "#a8721c"
+            check_fg = text
+            gold_bg = "#fcf1dd"
+            gold_fg = "#9a6716"
+            row_even = "#f6fafa"
+            row_tutti = "#fff8ea"
+            row_modified = "#fff5c2"
+            row_new = "#dcf5e3"
 
         style.configure("App.TFrame", background=app_bg)
         style.configure("Card.TFrame", background=card_bg)
@@ -1620,14 +1774,13 @@ class FormazioniApp:
                         font=("Segoe UI Semibold", 10, "bold"), padding=(18, 11),
                         borderwidth=0, focusthickness=0)
         style.map("Primary.TButton",
-                  background=[("active", "#1d6a6a"), ("pressed", "#154d4d")])
+                  background=[("pressed", primary_press), ("active", primary_hover)])
 
         style.configure("Secondary.TButton", background=secondary_bg, foreground=secondary_fg,
                         font=("Segoe UI Semibold", 9, "bold"), padding=(14, 9),
                         borderwidth=0, focusthickness=0)
         style.map("Secondary.TButton",
-                  background=[("active", "#d5e0e1" if not dark else "#33495a"),
-                              ("pressed", "#c2d2d3" if not dark else "#466175")])
+                  background=[("pressed", secondary_press), ("active", secondary_hover)])
 
         style.configure("Accent.TButton", background=accent_btn_bg, foreground=accent_btn_fg,
                         font=("Segoe UI Semibold", 9, "bold"), padding=(14, 9),
@@ -1657,20 +1810,20 @@ class FormazioniApp:
                   fieldbackground=[("readonly", field_bg)])
 
         style.configure("Treeview", background=tree_bg, fieldbackground=tree_field,
-                        foreground=tree_fg, rowheight=28,
+                        foreground=tree_fg, rowheight=30,
                         bordercolor=border, borderwidth=1, font=("Segoe UI", 9))
         style.configure("Treeview.Heading", background=tree_head_bg, foreground=tree_head_fg,
-                        font=("Segoe UI Semibold", 9, "bold"), padding=9,
+                        font=("Segoe UI Semibold", 9, "bold"), padding=(9, 8),
                         relief="flat", borderwidth=0)
         style.map("Treeview",
                   background=[("selected", tree_sel_bg)],
                   foreground=[("selected", tree_sel_fg)])
         style.map("Treeview.Heading",
-                  background=[("active", "#1d6a6a")])
+                  background=[("active", tree_head_hover)])
 
         style.configure("Vertical.TScrollbar", background=scroll_bg, troughcolor=scroll_trough,
                         bordercolor=scroll_bg, arrowcolor=tree_head_fg, arrowsize=14,
-                        relief="flat", borderwidth=0, gripcount=0, width=14)
+                        relief="flat", borderwidth=0, gripcount=0, width=12)
         style.map("Vertical.TScrollbar",
                   background=[("active", focus), ("disabled", scroll_trough)])
 
@@ -1680,7 +1833,7 @@ class FormazioniApp:
                         bordercolor=border,
                         lightcolor=focus,
                         darkcolor=focus,
-                        thickness=14)
+                        thickness=8)
 
         style.configure("TCheckbutton", background=check_bg, foreground=check_fg,
                         font=("Segoe UI Semibold", 9), focusthickness=0)
@@ -1692,12 +1845,15 @@ class FormazioniApp:
             "app_bg": app_bg, "card_bg": card_bg, "card_body_bg": card_body_bg,
             "sh1": sh1, "sh2": sh2, "text": text, "text_muted": text_muted,
             "gold": gold, "accent_bg": accent_bg, "accent_fg": accent_fg,
-            "title_bg": title_bg, "title_fg": title_fg,
+            "title_bg": title_bg, "title_fg": title_fg, "subtitle_fg": subtitle_fg,
             "accent_label_bg": accent_label_bg, "accent_label_fg": accent_label_fg,
             "section_bg": section_bg, "section_fg": section_fg,
             "muted_bg": muted_bg, "muted_fg": muted_fg,
             "gold_bg": gold_bg, "count_bg": count_bg, "secure_bg": secure_bg,
             "field_bg": field_bg, "border": border, "focus": focus,
+            "count_fg": count_fg, "primary_bg": primary_bg,
+            "row_even": row_even, "row_tutti": row_tutti,
+            "row_modified": row_modified, "row_new": row_new,
         }
 
     # ---------------------------- Scaffold --------------------------------
@@ -1708,26 +1864,6 @@ class FormazioniApp:
                 child.destroy()
             except Exception:
                 pass
-
-    def _install_drain_loop(self):
-        self._drain_queue()
-
-    def _drain_queue(self):
-        try:
-            while True:
-                kind, payload = self._queue.get_nowait()
-                if kind == "progress":
-                    self._set_progress(payload["step"], payload["total"])
-                elif kind == "status":
-                    self.status.set(str(payload))
-                elif kind == "progress_ready_label":
-                    self.progress_label.set(self.tr("progress_ready"))
-                    if self._progressbar is not None:
-                        self._progressbar["value"] = 0
-        except queue.Empty:
-            pass
-        finally:
-            self.root.after(80, self._drain_queue)
 
     def _set_progress(self, step: int, total: int):
         total = max(1, total)
@@ -1754,45 +1890,51 @@ class FormazioniApp:
         c = tk.Canvas(header_outer, height=148, highlightthickness=0, bd=0, bg=title_bg)
         c.pack(fill=X, side="top")
 
-        def paint_header(_evt=None):
-            w = max(c.winfo_width(), 1)
-            c.delete("all")
-            if dark:
-                self._draw_gradient(c, w, 148, "#07131b", "#0e1a22")
-            else:
-                self._draw_gradient(c, w, 148, "#0a2235", "#153a52")
-            c.create_rectangle(0, 146, w, 148, fill=self._style_colors["gold"], outline="")
+        # Cerchi decorativi a destra (sotto i controlli): tonalita' appena piu'
+        # chiare dello sfondo, per dare profondita' senza disturbare il testo.
+        deco = ("#0d1c26", "#11232f", "#163040") if dark else ("#0f3249", "#133a53", "#1a4862")
 
-        c.bind("<Configure>", paint_header)
-        c.after(1, paint_header)
-
-        content = tk.Frame(header_outer, bg=title_bg)
-        content.place(x=42, y=28, relwidth=1.0, width=-84)
-
-        logo_wrap = tk.Frame(content, bg=title_bg)
-        logo_wrap.pack(side=LEFT, padx=(0, 18))
         try:
-            if ICON_PNG.exists():
+            if LOGO_HEADER_PNG.exists():
+                logo_img = tk.PhotoImage(file=str(LOGO_HEADER_PNG))
+            elif ICON_PNG.exists():
                 logo_img = tk.PhotoImage(file=str(ICON_PNG))
+                logo_img = logo_img.subsample(max(1, logo_img.width() // 64))
             else:
                 rgba, ww, hh = _build_in_memory_icon(64, 64)
                 logo_img = tk.PhotoImage(data=_png_from_rgba(rgba, ww, hh))
-            # Resize to 40x40: use subsample/zoom as available, keep sharp
-            try:
-                logo_img = logo_img.subsample(max(1, logo_img.width() // 40),
-                                               max(1, logo_img.height() // 40))
-            except Exception:
-                pass
-            logo_lbl = tk.Label(logo_wrap, image=logo_img, bg=title_bg, bd=0)
-            logo_lbl.pack(side=LEFT)
             self._header_logo = logo_img
         except Exception:
             self._header_logo = None
 
-        ttk.Label(content, text=self.tr("eyebrow"), style="Eyebrow.TLabel").pack(anchor="w")
-        ttk.Label(content, text=self.tr("header_title"), style="Title.TLabel").pack(anchor="w", pady=(4, 0))
-        ttk.Label(content, text=self.tr("header_subtitle"),
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(6, 0))
+        colors = self._style_colors
+        # Logo e testi disegnati direttamente sul canvas: niente riquadri di
+        # sfondo pieno, cosi' le decorazioni restano visibili dietro al testo.
+        def paint_header(_evt=None):
+            w = max(c.winfo_width(), 1)
+            c.delete("all")
+            c.create_rectangle(0, 0, w, 148, fill=title_bg, outline="")
+            c.create_oval(w - 330, 60, w + 90, 480, fill=deco[0], outline="")
+            c.create_oval(w - 190, 78, w + 50, 318, fill=deco[1], outline="")
+            c.create_oval(w - 420, 104, w - 300, 224, fill=deco[0], outline="")
+            c.create_oval(w - 92, 112, w - 52, 152, fill=deco[2], outline="")
+            x = 42
+            if self._header_logo is not None:
+                c.create_image(x, 74, image=self._header_logo, anchor="w")
+                x += self._header_logo.width() + 22
+            item = c.create_text(x, 26, anchor="nw", text=self.tr("eyebrow"),
+                                 fill=colors["gold"], font=("Segoe UI", 8, "bold"))
+            item = c.create_text(x - 2, c.bbox(item)[3] + 2, anchor="nw",
+                                 text=self.tr("header_title"), fill=colors["title_fg"],
+                                 font=("Segoe UI Semibold", 26, "bold"))
+            c.create_text(x, c.bbox(item)[3] + 2, anchor="nw",
+                          text=self.tr("header_subtitle"), fill=colors["subtitle_fg"],
+                          font=("Segoe UI", 10))
+            # Filetto inferiore: oro che sfuma nel colore primario
+            self._draw_hgradient(c, w, 145, 3, colors["gold"], colors["primary_bg"])
+
+        c.bind("<Configure>", paint_header)
+        c.after(1, paint_header)
 
         controls = tk.Frame(header_outer, bg=title_bg)
         controls.place(relx=1.0, x=-42, y=28, anchor="ne")
@@ -1800,7 +1942,7 @@ class FormazioniApp:
         row.pack(anchor="e")
 
         tk.Label(row, text=self.tr("lbl_theme") + "  ", bg=title_bg,
-                 fg=self._style_colors["text_muted"],
+                 fg=self._style_colors["subtitle_fg"],
                  font=("Segoe UI Semibold", 9, "bold")).pack(side=LEFT)
         theme_switch = ttk.Combobox(
             row, values=[self.tr("theme_light"), self.tr("theme_dark")],
@@ -1817,7 +1959,7 @@ class FormazioniApp:
 
 
         tk.Label(row, text=self.tr("lbl_language") + "  ", bg=title_bg,
-                 fg=self._style_colors["text_muted"],
+                 fg=self._style_colors["subtitle_fg"],
                  font=("Segoe UI Semibold", 9, "bold")).pack(side=LEFT)
         langs = available_languages()
         labels = []
@@ -1861,6 +2003,19 @@ class FormazioniApp:
 
         theme_switch.bind("<<ComboboxSelected>>", on_theme)
         lang_combo.bind("<<ComboboxSelected>>", on_lang)
+
+    def _draw_hgradient(self, canvas, w, y, h, color1, color2):
+        """Banda orizzontale alta h con sfumatura da sinistra (color1) a destra (color2)."""
+        r1, g1, b1 = canvas.winfo_rgb(color1)
+        r2, g2, b2 = canvas.winfo_rgb(color2)
+        steps = 64
+        seg = w / steps
+        for i in range(steps):
+            t = i / (steps - 1)
+            color = "#%04x%04x%04x" % (int(r1 + (r2 - r1) * t), int(g1 + (g2 - g1) * t),
+                                       int(b1 + (b2 - b1) * t))
+            canvas.create_rectangle(int(i * seg), y, int((i + 1) * seg) + 1, y + h,
+                                    fill=color, outline="")
 
     def _draw_gradient(self, canvas, w, h, color1, color2):
         steps = max(1, h)
@@ -1997,24 +2152,37 @@ class FormazioniApp:
 
     def _card(self, parent, title=None, subtitle=None, accent=None, **kwargs):
         colors = self._style_colors
+        # Ombra morbida in basso a destra (sh1) + bordo sottile (sh2) attorno alla card
         shadow1 = tk.Frame(parent, bg=colors["sh1"], highlightthickness=0)
         shadow2 = tk.Frame(shadow1, bg=colors["sh2"], padx=1, pady=1)
-        shadow2.pack(fill=BOTH, expand=True, padx=2, pady=2)
-        card = tk.Frame(shadow2, bg=colors["card_bg"], padx=2, pady=2)
-        card.pack(fill=BOTH, expand=True, padx=1, pady=1)
-        inner = tk.Frame(card, bg=colors["card_body_bg"], padx=26, pady=24)
+        shadow2.pack(fill=BOTH, expand=True, padx=(0, 1), pady=(0, 2))
+        card = tk.Frame(shadow2, bg=colors["card_bg"])
+        card.pack(fill=BOTH, expand=True)
+        inner = tk.Frame(card, bg=colors["card_body_bg"], padx=26, pady=22)
         inner.pack(fill=BOTH, expand=True)
 
         head = tk.Frame(inner, bg=colors["card_body_bg"])
         head.pack(fill=X)
         if title or accent:
+            # "01  ·  CONFIGURAZIONE" -> pillola col numero + etichetta
+            number, label = "", accent or ""
+            if accent and "·" in accent:
+                number, label = (part.strip() for part in accent.split("·", 1))
+            if number:
+                tk.Label(head, text=number, bg=colors["count_bg"], fg=colors["count_fg"],
+                         font=("Segoe UI Semibold", 12, "bold"), width=3, pady=6,
+                         ).pack(side=LEFT, padx=(0, 14), anchor="n")
             left = tk.Frame(head, bg=colors["card_body_bg"])
             left.pack(side=LEFT, fill=X, expand=True)
-            if accent:
-                ttk.Label(left, text=accent, style="SectionAccent.TLabel").pack(anchor="w")
+            if label:
+                ttk.Label(left, text=label, style="SectionAccent.TLabel").pack(anchor="w")
             if title:
-                ttk.Label(left, text=title, style="Section.TLabel").pack(anchor="w", pady=(2, 0))
-            tk.Frame(inner, bg=colors["gold"], height=2).pack(fill=X, pady=(16, 22))
+                ttk.Label(left, text=title, style="Section.TLabel").pack(anchor="w", pady=(1, 0))
+            # Divisore: breve tratto oro su linea sottile
+            divider = tk.Frame(inner, bg=colors["card_body_bg"], height=3)
+            divider.pack(fill=X, pady=(16, 20))
+            tk.Frame(divider, bg=colors["sh2"]).place(x=0, y=1, relwidth=1.0, height=1)
+            tk.Frame(divider, bg=colors["gold"]).place(x=0, y=0, width=56, height=3)
 
         if subtitle:
             ttk.Label(inner, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
@@ -2088,6 +2256,10 @@ class FormazioniApp:
                               style="Secondary.TButton", command=self.open_department_editor)
         dept_btn.pack(side=LEFT, padx=(10, 0))
         self._add_tooltip(dept_btn, lambda: self.tr("tt_depts"))
+        modules_btn = ttk.Button(action_row, text=self.tr("btn_modules"),
+                                 style="Secondary.TButton", command=self.open_template_manager)
+        modules_btn.pack(side=LEFT, padx=(10, 0))
+        self._add_tooltip(modules_btn, lambda: self.tr("tt_modules"))
 
     # ------------------------- Card 2 (Employee) --------------------------
     def _build_card2(self, body):
@@ -2307,7 +2479,7 @@ class FormazioniApp:
         p = filedialog.askopenfilename(
             title=self.tr("bat_choose"),
             initialdir=self.template_dir.get(),
-            filetypes=[("CSV / Excel", "*.csv *.xlsx *.xls"), ("All", "*.*")],
+            filetypes=[("CSV / Excel", "*.csv *.xlsx"), ("All", "*.*")],
         )
         if not p:
             return
@@ -2420,7 +2592,6 @@ class FormazioniApp:
                     except Exception:
                         pass
                 save_hashes(hashes)
-                self.saved_hashes = hashes
             finally:
                 self._post("done_batch", {
                     "ok": ok, "skip": skip, "fail": fail,
@@ -2548,10 +2719,10 @@ class FormazioniApp:
         # --- Colors hash status tags ---
         colors = self._style_colors
         self.tree.tag_configure("odd", background=colors["card_body_bg"])
-        self.tree.tag_configure("even", background="#f3faf8" if self.theme.get() == "light" else "#1a2e38")
-        self.tree.tag_configure("tutti", background="#fff8ea" if self.theme.get() == "light" else "#3a2e0a")
-        self.tree.tag_configure("modified", background="#fff5b3" if self.theme.get() == "light" else "#554500")
-        self.tree.tag_configure("new", background="#d4f5d4" if self.theme.get() == "light" else "#103b1f")
+        self.tree.tag_configure("even", background=colors["row_even"])
+        self.tree.tag_configure("tutti", background=colors["row_tutti"])
+        self.tree.tag_configure("modified", background=colors["row_modified"])
+        self.tree.tag_configure("new", background=colors["row_new"])
 
         # --- Progress + buttons ---
         prog_wrap = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
@@ -2592,8 +2763,10 @@ class FormazioniApp:
     def _build_footer(self, body_container):
         footer_outer = tk.Frame(self.root, bg=self._style_colors["app_bg"])
         footer_outer.pack(fill=X, side="bottom")
-        footer = tk.Frame(footer_outer, bg=self._style_colors["card_body_bg"], padx=24, pady=12)
-        footer.pack(fill=X, padx=30, pady=(0, 16))
+        footer_border = tk.Frame(footer_outer, bg=self._style_colors["sh2"], padx=1, pady=1)
+        footer_border.pack(fill=X, padx=30, pady=(0, 16))
+        footer = tk.Frame(footer_border, bg=self._style_colors["card_body_bg"], padx=24, pady=12)
+        footer.pack(fill=X)
 
         status_wrap = tk.Frame(footer, bg=self._style_colors["card_body_bg"])
         status_wrap.pack(side=LEFT, fill=X, expand=True)
@@ -2959,7 +3132,6 @@ class FormazioniApp:
                     except Exception:
                         pass
                 save_hashes(hashes)
-                self.saved_hashes = hashes
                 self._post("status", tr_done)
                 self._post("done_single", {
                     "ok": True, "path": str(output_path), "total": total,
@@ -2975,7 +3147,7 @@ class FormazioniApp:
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------------- Worker -> mainloop routing --------------------
-    def _drain_queue(self):  # noqa: F811 (intended override; no, we already defined it. Actually duplicate name! Fix: call earlier install_drain_loop -> _drain_queue, but this method will conflict. Fix by renaming the worker drain differently: actually previous code already installed _drain_queue but we redefined it here → conflict. Fix: merge the two handlers.
+    def _drain_queue(self):
         try:
             while True:
                 kind, payload = self._queue.get_nowait()
@@ -3130,185 +3302,304 @@ class FormazioniApp:
         ttk.Button(footer, text=self.tr("de_cancel"), style="Secondary.TButton",
                    command=win.destroy).pack(side=RIGHT, padx=(0, 10))
 
-    # ----------------------- Batch Window ----------------------------------
-    def open_batch_window(self):
+    # ---------------------- Gestione moduli ------------------------------
+    def _template_form(self, parent, title: str, source_name: str,
+                       initial: dict[str, Any]) -> dict[str, Any] | None:
+        """Finestra modale per reparto / copie / codice. Ritorna i valori o None."""
+        colors = self._style_colors
+        dlg = tk.Toplevel(parent)
+        dlg.title(title)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        dlg.configure(bg=colors["app_bg"])
+        try:
+            _set_app_icon(dlg)
+        except Exception:
+            pass
+        body = tk.Frame(dlg, bg=colors["card_body_bg"], padx=20, pady=18)
+        body.pack(fill=BOTH, expand=True, padx=12, pady=12)
+        body.columnconfigure(1, weight=1)
+
+        def label(text, row):
+            tk.Label(body, text=text, bg=colors["card_body_bg"], fg=colors["text"],
+                     font=("Segoe UI Semibold", 9, "bold"), anchor="w"
+                     ).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=(0, 10))
+
+        tk.Label(body, text=self.tr("tm_form_file", name=source_name),
+                 bg=colors["card_body_bg"], fg=colors["text_muted"],
+                 font=("Segoe UI", 9), anchor="w", wraplength=420, justify="left"
+                 ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        suffix = Path(source_name).suffix
+        dept_var = StringVar(value=initial.get("department", ""))
+        copies_var = StringVar(value=str(initial.get("copies", 1)))
+        code_var = StringVar(value=initial.get("code", ""))
+        code_touched = {"value": bool(initial.get("code"))}
+
+        label(self.tr("tm_col_dept"), 1)
+        dept_values = ["TUTTI"] + [d for d in department_options(self.templates) if d != "TUTTI"]
+        dept_cb = ttk.Combobox(body, textvariable=dept_var, values=dept_values, width=32)
+        dept_cb.grid(row=1, column=1, sticky="ew", pady=(0, 10))
+
+        label(self.tr("tm_col_copies"), 2)
+        copies_sp = ttk.Spinbox(body, from_=1, to=50, textvariable=copies_var, width=6)
+        copies_sp.grid(row=2, column=1, sticky="w", pady=(0, 10))
+
+        label(self.tr("tm_col_code"), 3)
+        code_ent = ttk.Entry(body, textvariable=code_var, width=10)
+        code_ent.grid(row=3, column=1, sticky="w", pady=(0, 10))
+        code_ent.bind("<Key>", lambda _e: code_touched.__setitem__("value", True))
+
+        tk.Label(body, text=self.tr("tm_form_hint"), bg=colors["card_body_bg"],
+                 fg=colors["text_muted"], font=("Segoe UI", 8), anchor="w",
+                 wraplength=420, justify="left"
+                 ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        preview_var = StringVar()
+        tk.Label(body, textvariable=preview_var, bg=colors["card_body_bg"],
+                 fg=colors["text"], font=("Consolas", 10, "bold"), anchor="w"
+                 ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        def refresh_preview(*_):
+            if not code_touched["value"]:
+                code_var.set(suggest_template_code(dept_var.get()))
+            err = validate_template_fields(dept_var.get(), copies_var.get(), code_var.get())
+            if err:
+                preview_var.set("⚠ " + self.tr(err))
+            else:
+                preview_var.set(self.tr("tm_form_preview", name=build_template_filename(
+                    dept_var.get(), int(copies_var.get()), code_var.get(), suffix)))
+
+        dept_var.trace_add("write", refresh_preview)
+        copies_var.trace_add("write", refresh_preview)
+        code_var.trace_add("write", refresh_preview)
+        refresh_preview()
+
+        result: dict[str, Any] = {}
+
+        def confirm(_evt=None):
+            err = validate_template_fields(dept_var.get(), copies_var.get(), code_var.get())
+            if err:
+                messagebox.showwarning(self.tr("de_err_empty_title"), self.tr(err), parent=dlg)
+                return
+            result.update(department=dept_var.get().strip().upper(),
+                          copies=int(copies_var.get()),
+                          code=code_var.get().strip().upper())
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=colors["card_body_bg"])
+        btns.grid(row=6, column=0, columnspan=2, sticky="e")
+        ttk.Button(btns, text=self.tr("de_cancel"), style="Secondary.TButton",
+                   command=dlg.destroy).pack(side=LEFT, padx=(0, 10))
+        ttk.Button(btns, text=self.tr("tm_form_ok"), style="Primary.TButton",
+                   command=confirm).pack(side=LEFT)
+        dlg.bind("<Return>", confirm)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dept_cb.focus_set()
+        dlg.grab_set()
+        parent.wait_window(dlg)
+        try:
+            parent.grab_set()
+        except tk.TclError:
+            pass
+        return result or None
+
+    def open_template_manager(self):
+        colors = self._style_colors
         win = tk.Toplevel(self.root)
-        win.title(self.tr("bat_title"))
+        win.title(self.tr("tm_title"))
         win.transient(self.root)
         win.grab_set()
-        win.geometry("760x560")
-        win.configure(bg=self._style_colors["app_bg"])
+        win.geometry("900x560")
+        win.minsize(700, 420)
+        win.configure(bg=colors["app_bg"])
         try:
             _set_app_icon(win)
         except Exception:
             pass
-        body = tk.Frame(win, bg=self._style_colors["card_body_bg"], padx=18, pady=18)
+        body = tk.Frame(win, bg=colors["card_body_bg"], padx=18, pady=18)
         body.pack(fill=BOTH, expand=True, padx=14, pady=14)
-        ttk.Label(body, text=self.tr("bat_subtitle"), style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
-        path_var = StringVar()
+        ttk.Label(body, text=self.tr("tm_hint"), style="Muted.TLabel",
+                  wraplength=820, justify="left").pack(anchor="w", pady=(0, 12))
 
-        top_row = tk.Frame(body, bg=self._style_colors["card_body_bg"])
-        top_row.pack(fill=X, pady=(0, 10))
-        ttk.Entry(top_row, textvariable=path_var).pack(side=LEFT, fill=X, expand=True, padx=(0, 10))
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(top_row)
-        except Exception:
-            pass
+        toolbar = tk.Frame(body, bg=colors["card_body_bg"])
+        toolbar.pack(fill=X, side="bottom")
 
-        tree_holder = tk.Frame(body, bg=self._style_colors["card_body_bg"])
-        tree_holder.pack(fill=BOTH, expand=True, pady=(0, 12))
-        tree_holder.rowconfigure(0, weight=1)
-        tree_holder.columnconfigure(0, weight=1)
-        pv = ttk.Treeview(tree_holder, columns=("nome", "data", "reparto"),
-                          show="headings", height=14)
-        for col, title, width in (("nome", "Nome", 220),
-                                  ("data", "Data", 150),
-                                  ("reparto", "Reparto", 220)):
-            pv.heading(col, text=title)
-            pv.column(col, width=width, anchor="w")
-        pv.grid(row=0, column=0, sticky="nsew")
-        vsb = ttk.Scrollbar(tree_holder, orient="vertical", command=pv.yview)
-        vsb.grid(row=0, column=1, sticky="ns")
-        pv.configure(yscrollcommand=vsb.set)
-        # Register the Treeview so wheel inside it doesn't scroll main window
-        try:
-            reg = getattr(self, "_register_local_wheel", None)
-            if callable(reg):
-                reg(pv)
-        except Exception:
-            pass
+        list_wrap = tk.Frame(body, bg=colors["card_body_bg"])
+        list_wrap.pack(fill=BOTH, expand=True, pady=(0, 12))
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+        columns = ("file", "dept", "copies", "code", "status")
+        tree = ttk.Treeview(list_wrap, columns=columns, show="headings", selectmode="extended")
+        widths = {"file": 280, "dept": 170, "copies": 70, "code": 80, "status": 220}
+        for col in columns:
+            tree.heading(col, text=self.tr(f"tm_col_{col}"))
+            tree.column(col, width=widths[col],
+                        anchor="center" if col in ("copies", "code") else "w")
+        tree.tag_configure("invalid", foreground="#c0392b" if self.theme.get() == "light" else "#ff8a7a")
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(list_wrap, orient="vertical", command=tree.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=sb.set)
+        rows: dict[str, Path] = {}
 
-        rows_data: list[dict[str, str]] = []
+        def folder() -> Path:
+            return Path(self.template_dir.get()).expanduser()
 
-        def load():
-            p = filedialog.askopenfilename(
-                title=self.tr("bat_choose"),
-                initialdir=self.template_dir.get(),
-                filetypes=[("CSV / Excel", "*.csv *.xlsx *.xls"), ("All", "*.*")],
-            )
-            if not p:
+        def reload():
+            self.refresh_templates()
+            tree.delete(*tree.get_children())
+            rows.clear()
+            ordered = sorted(self.templates, key=lambda t: (not t.is_for_every_department,
+                                                            t.department.upper(),
+                                                            t.path.name.lower()))
+            for tpl in ordered:
+                dept = (self.tr("tm_all_depts") if tpl.is_for_every_department
+                        else tpl.department.upper())
+                iid = tree.insert("", END, values=(tpl.display_name, dept, tpl.copies, tpl.code,
+                                                   "✓ " + self.tr("tm_status_ok")))
+                rows[iid] = tpl.path
+            for path in self.ignored:
+                iid = tree.insert("", END, values=(path.name, "—", "—", "—",
+                                                   "⚠ " + self.tr("tm_status_invalid")),
+                                  tags=("invalid",))
+                rows[iid] = path
+
+        def selected_paths() -> list[Path]:
+            return [rows[i] for i in tree.selection() if i in rows]
+
+        def require_one() -> Path | None:
+            paths = selected_paths()
+            if len(paths) != 1:
+                messagebox.showwarning(self.tr("de_err_none_title"),
+                                       self.tr("tm_err_select_one"), parent=win)
+                return None
+            return paths[0]
+
+        def initial_for(path: Path) -> dict[str, Any]:
+            tpl = parse_template(path)
+            if tpl:
+                return {"department": tpl.department.upper(), "copies": tpl.copies,
+                        "code": tpl.code}
+            return {"department": self.department.get() or "", "copies": 1, "code": ""}
+
+        def add_files():
+            sources = filedialog.askopenfilenames(
+                parent=win, title=self.tr("tm_add"),
+                filetypes=[(self.tr("tm_filetypes"), "*.docx *.doc *.xlsx *.xls *.pdf")])
+            if not sources:
                 return
-            path_var.set(p)
+            dest_dir = folder()
             try:
-                loaded = self._parse_batch_file(Path(p))
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror(self.tr("mb_error_title"), str(exc))
+                dest_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                messagebox.showerror(self.tr("tm_title"), str(exc), parent=win)
                 return
-            nonlocal rows_data
-            rows_data = loaded
-            for item in pv.get_children():
-                pv.delete(item)
-            for r in rows_data:
-                pv.insert("", END, values=(r.get("Nome", ""), r.get("Data", ""),
-                                           r.get("Reparto", "")))
+            added = 0
+            for src in map(Path, sources):
+                if src.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                initial = initial_for(src)
+                while True:
+                    values = self._template_form(win, self.tr("tm_form_title_add"),
+                                                 src.name, initial)
+                    if values is None:
+                        break
+                    target = dest_dir / build_template_filename(
+                        values["department"], values["copies"], values["code"], src.suffix)
+                    if target.exists():
+                        messagebox.showwarning(self.tr("de_err_exists_title"),
+                                               self.tr("tm_err_exists", name=target.name),
+                                               parent=win)
+                        initial = values
+                        continue
+                    try:
+                        shutil.copy2(src, target)
+                        added += 1
+                    except OSError as exc:
+                        messagebox.showerror(self.tr("tm_title"), str(exc), parent=win)
+                    break
+            if added:
+                reload()
+                self.status.set(self.tr("tm_added", n=added))
 
-        def run():
-            if not rows_data:
-                messagebox.showwarning(self.tr("bat_summary_title"), self.tr("bat_no_rows"))
+        def edit_selected(_evt=None):
+            path = require_one()
+            if path is None:
                 return
-            if self._worker_active:
-                return
-            out_dir_path = Path(self.output_dir.get()).expanduser()
-            self._worker_active = True
-            self._post("progress_ready_label", None)
-            # --- Snapshot ALL Tk/self state in MAIN THREAD ---
-            auto_open_batch = bool(self.auto_open.get())
-            lang_snap = dict(self.language) if self.language else {}
-            def s_tr(key: str, **kw) -> str:
-                raw = lang_snap.get(key, key)
+            initial = initial_for(path)
+            while True:
+                values = self._template_form(win, self.tr("tm_form_title_edit"),
+                                             path.name, initial)
+                if values is None:
+                    return
+                target = path.with_name(build_template_filename(
+                    values["department"], values["copies"], values["code"], path.suffix))
+                if target == path:
+                    return
+                if target.exists():
+                    messagebox.showwarning(self.tr("de_err_exists_title"),
+                                           self.tr("tm_err_exists", name=target.name),
+                                           parent=win)
+                    initial = values
+                    continue
                 try:
-                    return raw.format(**kw) if kw else raw
-                except Exception:
-                    return raw
-            tpl_snap = list(self.templates)
-            inc_snap = dict(self.template_inclusion)
-            saved_snap = dict(self.saved_hashes) if self.saved_hashes else {}
-            dept_opts = {d.upper() for d in department_options(tpl_snap)}
-            out_dir_snap = Path(out_dir_path)
+                    path.rename(target)
+                except OSError as exc:
+                    messagebox.showerror(self.tr("tm_title"), str(exc), parent=win)
+                    return
+                if str(path) in self.saved_hashes:
+                    self.saved_hashes[str(target)] = self.saved_hashes.pop(str(path))
+                    save_hashes(self.saved_hashes)
+                if path in self.template_inclusion:
+                    self.template_inclusion[target] = self.template_inclusion.pop(path)
+                reload()
+                self.status.set(self.tr("tm_renamed", name=target.name))
+                return
 
-            def work2():
-                ok = skip = fail = 0
-                details: list[str] = []
-                total = max(1, len(rows_data))
+        def delete_selected():
+            paths = selected_paths()
+            if not paths:
+                messagebox.showwarning(self.tr("de_err_none_title"),
+                                       self.tr("tm_err_select_any"), parent=win)
+                return
+            names = "\n".join("• " + p.name for p in paths[:10])
+            if len(paths) > 10:
+                names += "\n…"
+            if not messagebox.askyesno(self.tr("tm_delete"),
+                                       self.tr("tm_confirm_delete", n=len(paths), names=names,
+                                               trash=TRASH_DIR_NAME), parent=win):
+                return
+            for path in paths:
                 try:
-                    for idx, row in enumerate(rows_data, start=1):
-                        self._post("progress", {"step": idx, "total": total})
-                        nome = (row.get("Nome") or row.get("name") or "").strip()
-                        data = (row.get("Data") or row.get("date") or "").strip()
-                        reparto_raw = (row.get("Reparto") or row.get("department") or "").strip()
-                        reparto_list = [d for d in reparto_raw.split("+") if d]
-                        ruolo = ""
-                        note = ""
-                        if not nome:
-                            skip += 1
-                            details.append(s_tr("bat_skip_empty", i=idx))
-                            continue
-                        parsed = self._parse_date_str(data)
-                        if parsed is None:
-                            skip += 1
-                            details.append(s_tr("bat_skip_date", i=idx))
-                            continue
-                        for single_dept in (reparto_list or [reparto_raw.upper()]):
-                            dept_ok = (single_dept and single_dept.upper() in dept_opts)
-                            if not dept_ok:
-                                skip += 1
-                                details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
-                                continue
-                            sel = templates_for_department(tpl_snap, single_dept.upper())
-                            filt = [t for t in sel if inc_snap.get(t.path, True)]
-                            if not filt:
-                                skip += 1
-                                details.append(s_tr("bat_skip_dept", i=idx, d=single_dept))
-                                continue
-                            out_file = out_dir_snap / (
-                                f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}.pdf"
-                            )
-                            c = 2
-                            while out_file.exists():
-                                out_file = out_dir_snap / (
-                                    f"dossier_{safe_file_part(nome)}_{safe_file_part(single_dept)}_{c}.pdf"
-                                )
-                                c += 1
-                            try:
-                                build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                          single_dept.upper(), ruolo, note, filt)
-                                self._save_history(out_file, nome, single_dept.upper(), len(filt))
-                                ok += 1
-                                details.append(f"#{idx} OK · {out_file.name}")
-                            except Exception as exc:  # noqa: BLE001
-                                fail += 1
-                                details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
-                    hashes = dict(saved_snap)
-                    for t in tpl_snap:
-                        try:
-                            hashes[str(t.path)] = compute_template_hash(t.path)
-                        except Exception:
-                            pass
-                    save_hashes(hashes)
-                    self.saved_hashes = hashes
-                finally:
-                    self._post("done_batch", {
-                        "ok": ok, "skip": skip, "fail": fail,
-                        "detail": "\n".join(details[-30:]),
-                        "out_dir": str(out_dir_snap),
-                        "auto_open": bool(auto_open_batch),
-                    })
-                    self._post("worker_done", None)
+                    move_template_to_trash(path, folder())
+                except OSError as exc:
+                    messagebox.showerror(self.tr("tm_title"), str(exc), parent=win)
+            reload()
+            self.status.set(self.tr("tm_deleted", n=len(paths)))
 
-            threading.Thread(target=work2, daemon=True).start()
-            win.destroy()
+        def open_selected():
+            path = require_one()
+            if path is not None:
+                open_folder(path)
 
-        ttk.Button(top_row, text=self.tr("bat_choose"), style="Secondary.TButton",
-                   command=load).pack(side=LEFT)
+        for text_key, cmd, style in (
+            ("tm_add", add_files, "Accent.TButton"),
+            ("tm_edit", edit_selected, "Secondary.TButton"),
+            ("tm_open", open_selected, "Secondary.TButton"),
+            ("tm_delete", delete_selected, "Secondary.TButton"),
+        ):
+            ttk.Button(toolbar, text=self.tr(text_key), style=style, command=cmd
+                       ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(toolbar, text=self.tr("tm_close"), style="Primary.TButton",
+                   command=win.destroy).pack(side=RIGHT)
+        ttk.Button(toolbar, text=self.tr("tm_open_folder"), style="Secondary.TButton",
+                   command=lambda: open_folder(folder())).pack(side=RIGHT, padx=(0, 8))
 
-        footer = tk.Frame(body, bg=self._style_colors["card_body_bg"])
-        footer.pack(fill=X, side="bottom")
-        ttk.Label(footer, text=self.tr("bat_cols_short"), style="AppMuted.TLabel"
-                  ).pack(side=LEFT)
-        ttk.Button(footer, text=self.tr("bat_run"), style="Primary.TButton",
-                   command=run).pack(side=RIGHT)
+        tree.bind("<Double-1>", edit_selected)
+        tree.bind("<Return>", edit_selected)
+        tree.bind("<Delete>", lambda _e: delete_selected())
+        reload()
 
     def _parse_date_str(self, s: str):
         if not s:
@@ -3359,7 +3650,9 @@ class FormazioniApp:
 
     def _parse_batch_file(self, p: Path) -> list[dict[str, str]]:
         suffix = p.suffix.lower()
-        if suffix in {".xlsx", ".xls"}:
+        if suffix == ".xls":
+            raise ValueError(self.tr("bat_xls_unsupported"))
+        if suffix == ".xlsx":
             wb = load_workbook(p, data_only=True, read_only=True)
             try:
                 ws = wb.worksheets[0]
@@ -3421,8 +3714,14 @@ class FormazioniApp:
             "documents": total,
             "ts": datetime.now().isoformat(timespec="seconds"),
         })
-        HISTORY_FILE.write_text(json.dumps(history[:50], ensure_ascii=False, indent=2),
-                                encoding="utf-8")
+        if not isinstance(history, list):
+            history = []
+        try:
+            HISTORY_FILE.write_text(json.dumps(history[:50], ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+        except OSError:
+            # La cronologia e' accessoria: un errore qui non deve far fallire il dossier
+            traceback.print_exc()
 
 
 # --------------------------- MAIN -----------------------------------------
