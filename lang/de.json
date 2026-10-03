@@ -213,7 +213,7 @@
   "st_update_section": "UPDATES",
   "st_check_updates": "Beim Start nach Updates suchen (einmal täglich)",
   "st_update_source": "Update-Quelle",
-  "st_update_hint": "Netzwerkordner (z. B. \\\\server\\FormazioniPZZ) oder Webadresse einer version.json. Installierte Version: {version}.",
+  "st_update_hint": "Leer lassen für die GitHub-Releases, oder einen Netzwerkordner (z. B. \\\\server\\FormazioniPZZ) bzw. die Webadresse einer version.json angeben. Installierte Version: {version}.",
   "st_check_now": "Jetzt prüfen",
   "up_title": "Updates",
   "up_no_source": "Keine Update-Quelle konfiguriert. Bitte in den Einstellungen festlegen.",

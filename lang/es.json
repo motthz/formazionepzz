@@ -213,7 +213,7 @@
   "st_update_section": "ACTUALIZACIONES",
   "st_check_updates": "Buscar actualizaciones al iniciar (una vez al día)",
   "st_update_source": "Origen de actualizaciones",
-  "st_update_hint": "Carpeta de red (p. ej. \\\\server\\FormazioniPZZ) o dirección web de un archivo version.json. Versión instalada: {version}.",
+  "st_update_hint": "Déjalo vacío para usar las versiones de GitHub, o indica una carpeta de red (p. ej. \\\\server\\FormazioniPZZ) o la dirección web de un archivo version.json. Versión instalada: {version}.",
   "st_check_now": "Comprobar ahora",
   "up_title": "Actualizaciones",
   "up_no_source": "No hay un origen de actualizaciones configurado. Indícalo en Ajustes.",

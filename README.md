@@ -6,11 +6,7 @@ Inserisci nome, data di ingresso e reparto: l'app legge i template dalla cartell
 
 ## Installazione (consigliata)
 
-Scarica ed esegui:
-
-```text
-release/FormazioniPZZ_Setup.exe
-```
+Scarica **`FormazioniPZZ_Setup.exe`** dall'ultima release: <https://github.com/motthz/formazionepzz/releases/latest>, poi eseguilo.
 
 Il programma di installazione:
 
@@ -23,11 +19,7 @@ Per installazioni automatiche: `FormazioniPZZ_Setup.exe --silent` (opzioni: `--d
 
 ## Avvio senza installare dipendenze
 
-Per il PC aziendale usa il file:
-
-```text
-release/FormazioniPZZ.exe
-```
+Per il PC aziendale usa `FormazioniPZZ.exe`, allegato alla stessa [release](https://github.com/motthz/formazionepzz/releases/latest).
 
 È un eseguibile Windows autonomo: contiene già Python e tutte le librerie necessarie. Non richiede installazioni, permessi amministrativi o connessione internet per l'utilizzo.
 
@@ -86,15 +78,21 @@ I formati `.doc`, `.docx`, `.xls` e `.xlsx` sono supportati. Per conservare nel 
 
 ## Aggiornamenti
 
-Il controllo degli aggiornamenti è disattivato finché non si imposta un'origine in **Impostazioni → Origine aggiornamenti**:
+All'avvio (al massimo una volta al giorno) l'app controlla in background l'ultima release pubblicata su GitHub. Se c'è una versione più recente compare un avviso con il pulsante **Scarica**, che apre il download di `FormazioniPZZ_Setup.exe`: eseguendolo il programma si aggiorna e mantiene modelli e impostazioni. Il controllo scarica solo il numero di versione e non invia dati. Se la rete non è raggiungibile, l'app non mostra nessun messaggio. Si può disattivare in **Impostazioni**.
 
-- una cartella di rete (es. `\server\FormazioniPZZ`) che contiene `version.json` e `FormazioniPZZ_Setup.exe`;
+In **Impostazioni → Origine aggiornamenti** si può indicare, al posto di GitHub:
+
+- una cartella di rete (es. `\\server\FormazioniPZZ`) che contiene `version.json` e `FormazioniPZZ_Setup.exe`;
 - oppure l'indirizzo web di un `version.json`.
 
 Formato di `version.json` (un esempio è in `release/version.json`):
 
 ```json
-{ "version": "2.1.0", "url": "facoltativo: link al setup", "notes": "novità della versione" }
+{ "version": "2.2.0", "url": "facoltativo: link al setup", "notes": "novità della versione" }
 ```
 
-Il controllo avviene in background all'avvio, al massimo una volta al giorno. Se la rete non è raggiungibile, l'app non mostra nessun messaggio. A ogni rilascio aggiorna sia `APP_VERSION` in `app.py` sia `release/version.json`: `test_nuove_funzioni.py` verifica che le due versioni coincidano.
+## Pubblicare una nuova versione
+
+1. Aggiorna `APP_VERSION` in `app.py` e `release/version.json` (`test_nuove_funzioni.py` verifica che coincidano).
+2. Fai commit e push su `main`, poi crea e invia il tag: `git tag v2.3.0` e `git push origin v2.3.0`.
+3. Il workflow GitHub compila `FormazioniPZZ_Setup.exe` e `FormazioniPZZ.exe` e li allega alla release di quel tag, creandola se non esiste. Le app installate vedranno l'aggiornamento al successivo avvio.

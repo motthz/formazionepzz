@@ -75,7 +75,8 @@ def _resolve_app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
+DEFAULT_UPDATE_SOURCE = "https://api.github.com/repos/motthz/formazionepzz/releases/latest"
 APP_DIR = _resolve_app_dir()
 DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
@@ -1968,6 +1969,13 @@ def fetch_update_manifest(source: str, timeout: float = 4.0) -> dict[str, str] |
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8-sig"))
         default_url = ""
+        if isinstance(data, dict) and "tag_name" in data:
+            # API GitHub "releases/latest": tag vX.Y.Z, link diretto al setup se allegato
+            setup = next((a.get("browser_download_url") for a in data.get("assets") or []
+                          if str(a.get("name", "")).lower() == "formazionipzz_setup.exe"), None)
+            data = {"version": str(data["tag_name"]).lstrip("vV"),
+                    "url": setup or data.get("html_url") or "",
+                    "notes": data.get("name") or ""}
     else:
         manifest = Path(source).expanduser()
         if manifest.is_dir():
@@ -5062,11 +5070,8 @@ class FormazioniApp:
 
     # ---------------------- Aggiornamenti ---------------------------------
     def check_for_updates(self, manual: bool = False) -> None:
-        source = str(self.settings.get("update_source") or "").strip()
-        if not source:
-            if manual:
-                messagebox.showinfo(self.tr("up_title"), self.tr("up_no_source"))
-            return
+        # Campo vuoto = release pubblicate su GitHub
+        source = str(self.settings.get("update_source") or "").strip() or DEFAULT_UPDATE_SOURCE
         if self._update_check_running:
             return
         self._update_check_running = True

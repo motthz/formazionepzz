@@ -213,7 +213,7 @@
   "st_update_section": "MISES À JOUR",
   "st_check_updates": "Rechercher les mises à jour au démarrage (une fois par jour)",
   "st_update_source": "Source des mises à jour",
-  "st_update_hint": "Dossier réseau (ex. \\\\server\\FormazioniPZZ) ou adresse web d'un fichier version.json. Version installée : {version}.",
+  "st_update_hint": "Laissez vide pour utiliser les versions GitHub, ou indiquez un dossier réseau (ex. \\\\server\\FormazioniPZZ) ou l'adresse web d'un fichier version.json. Version installée : {version}.",
   "st_check_now": "Vérifier maintenant",
   "up_title": "Mises à jour",
   "up_no_source": "Aucune source de mises à jour configurée. Définissez-la dans Paramètres.",

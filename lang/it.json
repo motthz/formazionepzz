@@ -213,7 +213,7 @@
   "st_update_section": "AGGIORNAMENTI",
   "st_check_updates": "Controlla gli aggiornamenti all'avvio (una volta al giorno)",
   "st_update_source": "Origine aggiornamenti",
-  "st_update_hint": "Cartella di rete (es. \\\\server\\FormazioniPZZ) o indirizzo web di un file version.json. Versione installata: {version}.",
+  "st_update_hint": "Lascia vuoto per usare le release di GitHub, oppure indica una cartella di rete (es. \\\\server\\FormazioniPZZ) o l'indirizzo web di un file version.json. Versione installata: {version}.",
   "st_check_now": "Controlla ora",
   "up_title": "Aggiornamenti",
   "up_no_source": "Nessuna origine aggiornamenti configurata. Impostala in Impostazioni.",

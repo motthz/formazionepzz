@@ -94,6 +94,22 @@ def test_update_manifest(tmp: Path) -> None:
     shipped = json.loads((ROOT / "release" / "version.json").read_text(encoding="utf-8"))
     assert shipped["version"] == app.APP_VERSION, "aggiorna release/version.json"
 
+    # Risposta dell'API GitHub "releases/latest", senza rete
+    import io
+    import urllib.request
+    github = {"tag_name": "v9.1.0", "name": "Formazioni PZZ 9.1.0",
+              "html_url": "https://github.com/x/y/releases/tag/v9.1.0",
+              "assets": [{"name": "FormazioniPZZ.exe", "browser_download_url": "https://e/portable"},
+                         {"name": "FormazioniPZZ_Setup.exe", "browser_download_url": "https://e/setup"}]}
+    original = urllib.request.urlopen
+    urllib.request.urlopen = lambda *_a, **_k: io.BytesIO(json.dumps(github).encode())
+    try:
+        manifest = app.fetch_update_manifest(app.DEFAULT_UPDATE_SOURCE)
+    finally:
+        urllib.request.urlopen = original
+    assert manifest == {"version": "9.1.0", "url": "https://e/setup",
+                        "notes": "Formazioni PZZ 9.1.0"}, manifest
+
 
 def test_placeholder_scan_and_hash_cache(tmp: Path) -> None:
     from docx import Document

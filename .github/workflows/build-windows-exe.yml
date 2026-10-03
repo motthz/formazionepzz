@@ -1,8 +1,12 @@
 name: Build Windows executable
 
+# Ad ogni push su main: compila e verifica, gli exe restano scaricabili come artifact.
+# Su un tag vX.Y.Z: allega anche gli exe alla Release GitHub di quel tag
+# (la crea se non esiste). Gli exe non vengono piu' salvati nel repository.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -24,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Build executable
+      - name: Build portable executable
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ.spec
 
       - name: Build folder version (used by the installer, faster startup)
@@ -33,29 +37,23 @@ jobs:
       - name: Build installer
         run: python -m PyInstaller --clean --noconfirm installer/installer.spec
 
-      - name: Replace release executables
-        shell: pwsh
-        run: |
-          Copy-Item -Force dist/FormazioniPZZ.exe release/FormazioniPZZ.exe
-          Copy-Item -Force dist/FormazioniPZZ_Setup.exe release/FormazioniPZZ_Setup.exe
-
-      - name: Upload executable artifact
+      - name: Upload executables artifact
         uses: actions/upload-artifact@v4
         with:
           name: FormazioniPZZ-windows
           path: |
-            release/FormazioniPZZ.exe
-            release/FormazioniPZZ_Setup.exe
+            dist/FormazioniPZZ.exe
+            dist/FormazioniPZZ_Setup.exe
 
-      - name: Commit updated executable
+      - name: Attach executables to the release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add release/FormazioniPZZ.exe release/FormazioniPZZ_Setup.exe
-          if (git diff --cached --quiet) {
-            Write-Host "Executable unchanged"
-            exit 0
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "Formazioni PZZ $($tag.TrimStart('v'))" --generate-notes
           }
-          git commit -m "Build updated Windows executable"
-          git push
+          gh release upload $tag dist/FormazioniPZZ_Setup.exe dist/FormazioniPZZ.exe --clobber

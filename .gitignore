@@ -66,3 +66,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Eseguibili: si pubblicano come allegati delle Release GitHub
+release/*.exe

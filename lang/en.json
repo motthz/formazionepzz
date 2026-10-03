@@ -213,7 +213,7 @@
   "st_update_section": "UPDATES",
   "st_check_updates": "Check for updates at startup (once a day)",
   "st_update_source": "Update source",
-  "st_update_hint": "Network folder (e.g. \\\\server\\FormazioniPZZ) or web address of a version.json file. Installed version: {version}.",
+  "st_update_hint": "Leave empty to use the GitHub releases, or enter a network folder (e.g. \\\\server\\FormazioniPZZ) or the web address of a version.json file. Installed version: {version}.",
   "st_check_now": "Check now",
   "up_title": "Updates",
   "up_no_source": "No update source configured. Set it in Settings.",

@@ -34,26 +34,15 @@ L'icona `.ico` viene incorporata automaticamente nell'eseguibile dal file `.spec
 ### 2. Build
 
 ```bash
-# Rigenerare l'eseguibile
-python -m PyInstaller FormazioniPZZ.spec
-```
-
-### 2b. Programma di installazione
-
-Dopo aver compilato l'eseguibile, crea il setup (installa per l'utente corrente e mette il collegamento sul desktop):
-
-```bash
+# Exe portatile (un solo file)
+python -m PyInstaller --noconfirm FormazioniPZZ.spec
+# Versione "cartella", installata dal setup: si avvia molto più in fretta
+python -m PyInstaller --noconfirm FormazioniPZZ_dir.spec
+# Programma di installazione (include la versione cartella)
 python -m PyInstaller --noconfirm installer/installer.spec
-copy dist\FormazioniPZZ_Setup.exe release\
 ```
 
-### 3. Copia
-
-L'eseguibile verrà creato in `dist/FormazioniPZZ/`. Copia il file `FormazioniPZZ.exe` nella cartella `release/`:
-
-```bash
-copy dist\FormazioniPZZ\FormazioniPZZ.exe release\
-```
+I file finiti sono `dist/FormazioniPZZ.exe` e `dist/FormazioniPZZ_Setup.exe`. Non vanno salvati nel repository: si pubblicano come allegati di una Release GitHub. Il workflow lo fa da solo quando si invia un tag `vX.Y.Z`; i passaggi sono nel README, sezione "Pubblicare una nuova versione".
 
 ---
 
