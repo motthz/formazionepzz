@@ -2,7 +2,7 @@
 openpyxl==3.1.5
 python-docx==1.2.0
 reportlab==5.0.1
-pypdf==6.16.2
+pypdf==6.19.0
 pillow==12.3.0
-pyinstaller==6.22.2
+pyinstaller==6.22.3
 pywin32==312; sys_platform == "win32"
