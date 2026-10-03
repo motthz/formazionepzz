@@ -240,5 +240,10 @@
   "ts_details": "Details",
   "ts_open": "Öffnen",
   "up_get": "Herunterladen",
-  "bat_count": "  {n} Personen in der Liste"
+  "bat_count": "  {n} Personen in der Liste",
+  "log_hint": "Technische Details im Fehlerprotokoll:\n{path}",
+  "st_open_log": "Fehlerprotokoll öffnen",
+  "up_install": "Jetzt aktualisieren",
+  "up_downloading": "Version {version} wird heruntergeladen… Formazioni PZZ wird geschlossen und aktualisiert neu geöffnet.",
+  "up_failed": "Automatische Aktualisierung fehlgeschlagen: {e}"
 }

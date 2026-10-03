@@ -1,98 +1,53 @@
 # Formazioni PZZ
 
-Programma Python locale per creare un unico PDF di formazione per una persona appena entrata in azienda.
+[![Test e build](https://github.com/motthz/formazionepzz/actions/workflows/build-windows-exe.yml/badge.svg)](https://github.com/motthz/formazionepzz/actions/workflows/build-windows-exe.yml)
+[![Ultima versione](https://img.shields.io/github/v/release/motthz/formazionepzz?label=versione)](https://github.com/motthz/formazionepzz/releases/latest)
+[![Licenza MIT](https://img.shields.io/badge/licenza-MIT-blue)](LICENSE)
 
-Inserisci nome, data di ingresso e reparto: l'app legge i template dalla cartella `templates`, sostituisce `*nome*` e `*data*`, applica i documenti del reparto e quelli nominati `TUTTI`, quindi prepara un dossier PDF stampabile.
+🇬🇧 [English version](README.en.md)
 
-## Installazione (consigliata)
+Programma per Windows che crea in pochi secondi il **dossier di formazione in PDF** per chi entra in azienda. Scegli nome, data di ingresso e reparto: Formazioni PZZ prende i moduli Word, Excel e PDF del reparto, ci scrive `*nome*` e `*data*` e li unisce in un unico file pronto da stampare. Tutto resta sul computer.
 
-Scarica **`FormazioniPZZ_Setup.exe`** dall'ultima release: <https://github.com/motthz/formazionepzz/releases/latest>, poi eseguilo.
+![Finestra principale](docs/img/principale.png)
 
-Il programma di installazione:
+📖 **[Guida all'uso](https://motthz.github.io/formazionepzz/)** · 🆕 **[Novità](CHANGELOG.md)** · 🐞 **[Segnala un problema](https://github.com/motthz/formazionepzz/issues/new/choose)**
 
-- installa Formazioni PZZ per l'utente corrente in `%LOCALAPPDATA%\Programs\FormazioniPZZ` (non servono permessi di amministratore);
-- crea il collegamento **sul desktop** e nel **menu Start**;
-- registra il programma in *Impostazioni → App installate*, da cui si può disinstallare.
+## Installazione
 
-Rieseguendo il setup su un PC dove è già installato, il programma viene aggiornato mantenendo modelli, reparti e impostazioni.
-Per installazioni automatiche: `FormazioniPZZ_Setup.exe --silent` (opzioni: `--dir PERCORSO`, `--no-shortcuts`).
+Scarica **`FormazioniPZZ_Setup.exe`** dall'[ultima versione](https://github.com/motthz/formazionepzz/releases/latest) ed eseguilo.
 
-## Avvio senza installare dipendenze
+- Installa per l'utente corrente in `%LOCALAPPDATA%\Programs\FormazioniPZZ`, senza permessi di amministratore.
+- Crea il collegamento sul desktop e nel menu Start, e registra il programma in *Impostazioni → App installate*.
+- Gli aggiornamenti arrivano da soli: "Aggiorna ora" scarica la nuova versione, chiude l'app e la riapre aggiornata, mantenendo modelli, reparti e impostazioni.
+- Installazione automatica: `FormazioniPZZ_Setup.exe --silent` (opzioni `--dir PERCORSO`, `--no-shortcuts`).
 
-Per il PC aziendale usa `FormazioniPZZ.exe`, allegato alla stessa [release](https://github.com/motthz/formazionepzz/releases/latest).
+In alternativa, `FormazioniPZZ.exe` nella stessa release è la versione **portatile**: si avvia senza installazione, ma si apre più lentamente e si aggiorna a mano.
 
-È un eseguibile Windows autonomo: contiene già Python e tutte le librerie necessarie. Non richiede installazioni, permessi amministrativi o connessione internet per l'utilizzo.
+## Funzioni principali
 
-## Avvio da sorgente
+- **Modelli per reparto**: il nome del file indica reparto e copie (`SICUREZZA_2_SIC.docx`, `TUTTI_1_GEN.docx`); i dettagli sono in [templates/README.md](templates/README.md).
+- **Una persona o tante**: elenco batch, importazione da CSV/Excel con modello già pronto, conversione in un'unica sessione di Word.
+- **Anteprima**, **storico** dei dossier con "Usa questi dati", **filigrana** e **blocco modifica** del PDF.
+- Cinque lingue (IT, EN, DE, ES, FR), tema chiaro, scuro o "Sistema", scorciatoie da tastiera, trascinamento dei file.
+- I moduli senza segnaposto restano in cache; senza Office il batch lavora in parallelo.
 
-- Windows: doppio clic su `avvia_formazioni.bat`
-- macOS / Linux: esegui `./avvia_formazioni.sh`
-- In alternativa: `python launcher.py`
+Per conservare il layout originale dei modelli serve **Microsoft Office** oppure **LibreOffice** (con `soffice` nel PATH). Senza nessuno dei due, l'app ricostruisce i documenti con ReportLab.
 
-L'avvio da sorgente crea automaticamente un ambiente `.venv` locale e installa le dipendenze da `requirements.txt`.
+## Aggiornamenti e dati inviati
 
-## Template
+All'avvio, al massimo una volta al giorno, l'app legge il numero dell'ultima versione pubblicata su GitHub: non invia nessun dato. Si può disattivare in **Impostazioni**, dove si può anche indicare un'altra origine: una cartella di rete con `version.json` e `FormazioniPZZ_Setup.exe` (esempio in [release/version.json](release/version.json)) oppure l'indirizzo web di un `version.json`.
 
-Inserisci i file Word `.doc` / `.docx` o Excel `.xls` / `.xlsx` nella cartella `templates`.
+## Sviluppo
 
-Il nome deve essere:
-
-```text
-REPARTO_NUMERO_CODICE.doc (o .docx)
-REPARTO_NUMERO_CODICE.xls (o .xlsx)
+```bash
+python -m pip install -r requirements-dev.txt
+python app.py              # avvia l'app
+python -m pytest           # test
+python -m ruff check .     # controllo del codice
 ```
 
-Esempi:
+Su Windows si può anche fare doppio clic su `avvia_formazioni.bat`: crea da solo l'ambiente `.venv` e installa le dipendenze. Struttura del codice, flusso con pull request e pubblicazione delle versioni sono in **[CONTRIBUTING.md](CONTRIBUTING.md)**; la compilazione degli exe è in [BUILD_EXE.md](BUILD_EXE.md).
 
-```text
-SD_1_AAA.docx
-TUTTI_2_AAA.xlsx
-```
+## Licenza
 
-`NUMERO` indica quante copie del documento vengono inserite. `CODICE` è composto da tre lettere e serve solo per distinguere file simili. I dettagli completi sono in `templates/README.md`.
-
-## Nota sui formati
-
-I formati `.doc`, `.docx`, `.xls` e `.xlsx` sono supportati. Per conservare nel PDF il layout originale, installa LibreOffice e rendi `libreoffice` o `soffice` disponibile nel PATH. L'app modifica solo `*nome*` e `*data*`, converte ogni modulo con il motore Office e accoda le pagine originali senza ridisegnarle.
-
-## Storico, anteprima e opzioni PDF
-
-- **Storico**: elenca i dossier generati (fino a 500), con ricerca, apertura del PDF o della cartella e *Usa questi dati* per ricompilare il modulo.
-- **Anteprima**: crea un dossier di prova in una cartella temporanea, con una sola copia per modulo e la filigrana ANTEPRIMA.
-- **Modello Excel**: nell'elenco batch, scarica un `.xlsx` con le colonne Nome, Data e Reparto già pronte per l'import.
-- **Impostazioni → Dossier PDF**: filigrana facoltativa su ogni pagina (es. `COPIA CONTROLLATA`) e blocco della modifica del PDF, che resta apribile e stampabile senza password.
-
-## Uso rapido
-
-- **Trascina i file sulla finestra**: un CSV, oppure un Excel lasciato sull'elenco dipendenti, viene importato nel batch. Word, Excel e PDF lasciati altrove si aggiungono come nuovi moduli.
-- **Scorciatoie** (F1 per l'elenco completo): Ctrl+G genera, Ctrl+P anteprima, Ctrl+B genera tutto l'elenco, Ctrl+H storico, Ctrl+, impostazioni, F5 aggiorna i documenti, Invio nel campo nome aggiunge la persona all'elenco.
-- **Tema "Sistema"**: segue la modalità chiara/scura di Windows, anche se cambia mentre l'app è aperta.
-- A fine generazione compare un avviso in basso nella finestra, con "Apri PDF" o "Dettagli". Se si sta usando un'altra finestra arriva anche la notifica di Windows.
-
-## Prestazioni
-
-- Il batch converte i moduli di tutte le persone in **un'unica sessione** di Word/Excel: con 5 dossier circa la metà del tempo rispetto a generarli uno alla volta.
-- I moduli **senza** `*nome*` e `*data*` (regolamenti, procedure) si convertono una sola volta: il PDF resta in cache in `%LOCALAPPDATA%\FormazioniPZZ\pdf-cache` e viene riusato finché il file non cambia.
-- Senza Office installato il batch genera più dossier **in parallelo**, su più processori.
-- L'installer installa la versione "cartella" dell'app, che si apre più in fretta dell'exe singolo. Le librerie di Word, Excel e PDF si caricano solo alla prima generazione.
-
-## Aggiornamenti
-
-All'avvio (al massimo una volta al giorno) l'app controlla in background l'ultima release pubblicata su GitHub. Se c'è una versione più recente compare un avviso con il pulsante **Scarica**, che apre il download di `FormazioniPZZ_Setup.exe`: eseguendolo il programma si aggiorna e mantiene modelli e impostazioni. Il controllo scarica solo il numero di versione e non invia dati. Se la rete non è raggiungibile, l'app non mostra nessun messaggio. Si può disattivare in **Impostazioni**.
-
-In **Impostazioni → Origine aggiornamenti** si può indicare, al posto di GitHub:
-
-- una cartella di rete (es. `\\server\FormazioniPZZ`) che contiene `version.json` e `FormazioniPZZ_Setup.exe`;
-- oppure l'indirizzo web di un `version.json`.
-
-Formato di `version.json` (un esempio è in `release/version.json`):
-
-```json
-{ "version": "2.2.0", "url": "facoltativo: link al setup", "notes": "novità della versione" }
-```
-
-## Pubblicare una nuova versione
-
-1. Aggiorna `APP_VERSION` in `app.py` e `release/version.json` (`test_nuove_funzioni.py` verifica che coincidano).
-2. Fai commit e push su `main`, poi crea e invia il tag: `git tag v2.3.0` e `git push origin v2.3.0`.
-3. Il workflow GitHub compila `FormazioniPZZ_Setup.exe` e `FormazioniPZZ.exe` e li allega alla release di quel tag, creandola se non esiste. Le app installate vedranno l'aggiornamento al successivo avvio.
+[MIT](LICENSE): puoi usare, modificare e ridistribuire il programma, anche a scopo commerciale, mantenendo l'indicazione dell'autore.

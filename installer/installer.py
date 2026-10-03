@@ -14,22 +14,22 @@ Opzioni da riga di comando (per installazioni automatiche):
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-from pathlib import Path
-
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 if not getattr(sys, "frozen", False):
-    # Avvio da sorgente: ui_kit.py e' nella cartella del progetto
+    # Avvio da sorgente: il pacchetto formazioni/ e' nella cartella del progetto
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from ui_kit import UiKit
+    from formazioni.ui.kit import UiKit
 except Exception:  # senza Pillow l'installer funziona con lo stile base
     UiKit = None
 
@@ -102,6 +102,28 @@ def shortcut_paths() -> list[Path]:
     return paths
 
 
+def payload_version() -> str:
+    """Versione del programma contenuto nel pacchetto (release/version.json)."""
+    try:
+        data = json.loads((payload_dir() / "version.json").read_text(encoding="utf-8-sig"))
+        return str(data.get("version") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def wait_for_process(pid: int, timeout_s: int = 60) -> None:
+    """Aspetta che l'app che ha avviato l'aggiornamento si chiuda (file non piu' bloccati)."""
+    if os.name != "nt":
+        return
+    import ctypes
+
+    synchronize = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+    if handle:
+        ctypes.windll.kernel32.WaitForSingleObject(handle, timeout_s * 1000)
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def register_uninstaller(install_dir: Path) -> None:
     import winreg
     size_kb = sum(f.stat().st_size for f in install_dir.rglob("*") if f.is_file()) // 1024
@@ -113,6 +135,9 @@ def register_uninstaller(install_dir: Path) -> None:
             "InstallLocation": str(install_dir),
             "UninstallString": f'"{install_dir / UNINSTALLER_EXE}" --uninstall',
         }
+        version = payload_version()
+        if version:
+            values["DisplayVersion"] = version  # visibile in Impostazioni > App installate
         for name, value in values.items():
             winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
         winreg.SetValueEx(k, "EstimatedSize", 0, winreg.REG_DWORD, size_kb)
@@ -190,7 +215,11 @@ def uninstall(install_dir: Path, remove_data: bool) -> None:
         pass
     (install_dir / APP_EXE).unlink(missing_ok=True)
     shutil.rmtree(install_dir / INTERNAL_DIR, ignore_errors=True)
+    # Cache dei PDF convertiti: si rigenera, quindi va sempre rimossa
+    local_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / APP_ID
+    shutil.rmtree(local_data / "pdf-cache", ignore_errors=True)
     if remove_data:
+        shutil.rmtree(local_data, ignore_errors=True)  # anche il registro errori
         for name in ("templates", "output"):
             shutil.rmtree(install_dir / name, ignore_errors=True)
         for name in ("reparti.txt", "settings.json", ".formazioni_history.json", ".template_hashes.json"):
@@ -419,9 +448,20 @@ def main() -> None:
         target = Path(_arg_value(args, "--dir") or registered_install_dir() or DEFAULT_DIR)
         if "--uninstall" in args:
             uninstall(target, remove_data=False)
-        else:
+            return
+        # Aggiornamento avviato dall'app: si attende che si chiuda, poi la si riapre
+        wait_pid = _arg_value(args, "--wait-pid")
+        if wait_pid and wait_pid.isdigit():
+            wait_for_process(int(wait_pid))
+        try:
             install(target, shortcuts="--no-shortcuts" not in args,
                     register="--no-register" not in args, log=print)
+        except Exception as exc:  # noqa: BLE001 - senza console l'errore va mostrato
+            if "--relaunch" in args:
+                messagebox.showerror(APP_NAME, f"Aggiornamento non riuscito:\n{exc}")
+            raise
+        if "--relaunch" in args:
+            subprocess.Popen([str(target / APP_EXE)], cwd=str(target))
         return
     root = tk.Tk()
     InstallerUI(root, uninstall_mode="--uninstall" in args)

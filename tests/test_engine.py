@@ -14,9 +14,9 @@ from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import app  # noqa: E402
+from app_shim import app  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _templates() -> list[app.TemplateFile]:

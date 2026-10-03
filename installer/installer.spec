@@ -21,6 +21,7 @@ _program = ((_app_dir, os.path.join('payload', 'app')) if os.path.isdir(_app_dir
 _datas = [
     _program,
     (os.path.join(ROOT, 'release', 'reparti.txt'), 'payload'),
+    (os.path.join(ROOT, 'release', 'version.json'), 'payload'),  # DisplayVersion
     (os.path.join(ROOT, 'release', 'templates'), os.path.join('payload', 'templates')),
     (os.path.join(ROOT, 'assets', 'app_icon.ico'), 'assets'),
     (os.path.join(ROOT, 'assets', 'logo_header.png'), 'assets'),

@@ -42,7 +42,7 @@ python -m PyInstaller --noconfirm FormazioniPZZ_dir.spec
 python -m PyInstaller --noconfirm installer/installer.spec
 ```
 
-I file finiti sono `dist/FormazioniPZZ.exe` e `dist/FormazioniPZZ_Setup.exe`. Non vanno salvati nel repository: si pubblicano come allegati di una Release GitHub. Il workflow lo fa da solo quando si invia un tag `vX.Y.Z`; i passaggi sono nel README, sezione "Pubblicare una nuova versione".
+I file finiti sono `dist/FormazioniPZZ.exe` e `dist/FormazioniPZZ_Setup.exe`. Non vanno salvati nel repository: si pubblicano come allegati di una Release GitHub. Il workflow lo fa da solo quando si invia un tag `vX.Y.Z`; i passaggi sono in CONTRIBUTING.md, sezione "Pubblicare una versione".
 
 ---
 

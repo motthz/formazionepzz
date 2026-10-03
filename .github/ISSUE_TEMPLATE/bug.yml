@@ -1,0 +1,42 @@
+name: Segnala un problema
+description: Qualcosa non funziona come dovrebbe
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Grazie della segnalazione! Più dettagli ci dai, più in fretta possiamo risolvere.
+  - type: textarea
+    id: cosa
+    attributes:
+      label: Cosa è successo?
+      description: Descrivi il problema e cosa ti aspettavi invece.
+    validations:
+      required: true
+  - type: textarea
+    id: passi
+    attributes:
+      label: Come riprodurlo
+      description: I passaggi per far ricomparire il problema.
+      placeholder: |
+        1. Scelgo il reparto ...
+        2. Clicco su ...
+        3. Compare l'errore ...
+  - type: input
+    id: versione
+    attributes:
+      label: Versione di Formazioni PZZ
+      description: La trovi in Impostazioni, sotto "Origine aggiornamenti".
+      placeholder: "2.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: office
+    attributes:
+      label: Programma per i documenti installato sul PC
+      options: [Microsoft Office, LibreOffice, Nessuno, Non so]
+  - type: textarea
+    id: registro
+    attributes:
+      label: Registro errori
+      description: In Impostazioni clicca "Apri registro errori" e incolla qui le ultime righe, oppure trascina il file formazioni.log in questo riquadro.
+      render: text

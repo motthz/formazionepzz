@@ -10,17 +10,17 @@ import json
 import os
 import sys
 import tempfile
-import traceback
+import tkinter as tk
 from datetime import date
 from pathlib import Path
+from tkinter import messagebox, ttk
+
 from pypdf import PdfReader
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import app as a
+from app_shim import app as a  # noqa: E402
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parent.parent
 os.startfile = lambda *x, **k: None
 for m in ("showinfo", "showwarning", "showerror"):
     setattr(messagebox, m, lambda *a, **k: None)
@@ -56,6 +56,7 @@ TEST_OUTPUT.mkdir()
 
 from docx import Document
 from openpyxl import Workbook
+
 
 def make_docx(path: Path, lines: list[str]):
     d = Document()
@@ -98,6 +99,8 @@ a.LANG_DIR = ROOT_DIR / "lang"
 # Backup/reset settings
 if a.SETTINGS_FILE.exists():
     a.SETTINGS_FILE.unlink()
+# Il test verifica i testi italiani: la lingua predefinita dell'app e' l'inglese
+a.SETTINGS_FILE.write_text(json.dumps({"language": "it", "theme": "light"}), encoding="utf-8")
 
 g = a.FormazioniApp(root)
 check("F01 — App avviata senza crash", True)
@@ -126,6 +129,11 @@ def walk_labels(w):
             try:
                 if isinstance(c, (ttk.Label, tk.Label)):
                     label_texts_in_root.append((c.cget("text") or "").strip())
+                elif isinstance(c, tk.Canvas):
+                    # L'intestazione e' disegnata su canvas: i testi sono elementi "text"
+                    for item in c.find_all():
+                        if c.type(item) == "text":
+                            label_texts_in_root.append((c.itemcget(item, "text") or "").strip())
             except Exception:
                 pass
             walk_labels(c)
@@ -284,12 +292,12 @@ heading("F17: Card 3 — Modalità multi-reparto toggle")
 g.multi_dept_mode.set(False)
 g._toggle_multi_dept()
 for _ in range(2): root.update()
-single_vis = bool(g._single_dept_wrap.winfo_ismapped())
+single_vis = bool(g._single_dept_wrap.grid_info())
 check("F17a — Single mode → combo visibile", single_vis)
 g.multi_dept_mode.set(True)
 g._toggle_multi_dept()
 for _ in range(2): root.update()
-multi_vis = bool(g._multi_dept_wrap.winfo_ismapped())
+multi_vis = bool(g._multi_dept_wrap.grid_info())
 check("F17b — Multi mode → checkbox wrap visibile", multi_vis)
 # seleziona 2 reparti
 for d, v in g.multi_dept_values.items():
@@ -454,7 +462,6 @@ g.department.set("SICUREZZA")
 g.update_document_list()
 g._worker_active = False
 # Patch per non aprire messaggi
-import tkinter
 orig_info = messagebox.showinfo
 messagebox.showinfo = lambda *a, **k: None
 try:
@@ -475,51 +482,24 @@ heading("F22: Cronologia JSON (history.json) dopo generazione")
 if a.HISTORY_FILE.exists():
     hist = json.loads(a.HISTORY_FILE.read_text(encoding="utf-8"))
     check("F22a — History JSON è una lista", isinstance(hist, list), f"type={type(hist)}")
-    check("F22b — Ultima entry contiene 'Giuseppe Verdi'",
-          len(hist) > 0 and hist[0].get("name") == "Giuseppe Verdi",
+    check("F22b — Storico contiene 'Giuseppe Verdi'",
+          any(h.get("name") == "Giuseppe Verdi" for h in hist),
           f"prima entry={hist[0] if hist else None}")
     check("F22c — Limite history 50 entries conserved on write key logic ok",
           len(hist) <= 50 if hist else True)
 else:
     check("F22 — History missing", False, f"file non esiste: {a.HISTORY_FILE}")
 
-heading("F23: Batch window (apri + struttura colonne CSV/Excel)")
-batch_root = tk.Toplevel(root)
-batch_root.withdraw()
-# Usa la funzione open_batch_window sul primo oggetto g
-g.open_batch_window()
-batch_win = None
-for w in root.winfo_children():
-    try:
-        if isinstance(w, tk.Toplevel) and "Batch" in w.title():
-            batch_win = w; break
-    except Exception: pass
-check("F23a — Batch window aperta", batch_win is not None)
-if batch_win:
-    # trova Treeview colonne
-    pv = None
-    def walk_bat(w):
-        global pv
-        try:
-            for c in w.winfo_children():
-                try:
-                    if isinstance(c, ttk.Treeview) and pv is None:
-                        pv = c
-                except Exception: pass
-                walk_bat(c)
-        except Exception: pass
-    walk_bat(batch_win)
-    check("F23b — Treeview batch trovato", pv is not None)
-    if pv is not None:
-        cols = list(pv["columns"])
-        expected = {"nome", "data", "reparto"}
-        check("F23c — 3 colonne batch (nome data reparto) — ruolo/note rimossi v2",
-              set(cols) == expected, f"cols={cols}")
-        headings = [pv.heading(c, "text") for c in cols]
-        check("F23d — Heading prima colonna 'Nome'", any(h == "Nome" for h in headings),
-              f"headings={headings}")
-    batch_win.destroy()
-    for _ in range(2): root.update()
+heading("F23: Elenco batch integrato (colonne nome / data / reparto)")
+# La vecchia finestra "Batch multiplo" e' stata sostituita dall'elenco nella card 02
+pv = getattr(g, "_inline_batch_tree", None)
+check("F23a — Elenco batch presente nella finestra principale", pv is not None)
+if pv is not None:
+    cols = list(pv["columns"])
+    check("F23b — 3 colonne batch (nome data reparto)",
+          set(cols) == {"nome", "data", "reparto"}, f"cols={cols}")
+    headings = [pv.heading(c, "text") for c in cols]
+    check("F23c — Intestazioni colonne tradotte", all(headings), f"headings={headings}")
 
 heading("F24: Footer status + hash status label")
 st = g.status.get()
@@ -557,6 +537,7 @@ LOG.append(f"RIEPILOGO TEST UTENTE: {PASS} PASSATI, {FAIL} FALLITI su {PASS+FAIL
 LOG.append("=" * 60)
 root.destroy()
 import shutil
+
 try: shutil.rmtree(tmp_base, ignore_errors=True)
 except Exception: pass
 

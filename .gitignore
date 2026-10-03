@@ -69,3 +69,7 @@ Thumbs.db
 
 # Eseguibili: si pubblicano come allegati delle Release GitHub
 release/*.exe
+
+# Cache di test e controllo del codice
+.pytest_cache/
+.ruff_cache/
