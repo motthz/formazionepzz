@@ -25,10 +25,19 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+if not getattr(sys, "frozen", False):
+    # Avvio da sorgente: ui_kit.py e' nella cartella del progetto
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from ui_kit import UiKit
+except Exception:  # senza Pillow l'installer funziona con lo stile base
+    UiKit = None
+
 APP_NAME = "Formazioni PZZ"
 APP_ID = "FormazioniPZZ"
 APP_EXE = "FormazioniPZZ.exe"
 UNINSTALLER_EXE = "Disinstalla.exe"
+INTERNAL_DIR = "_internal"  # librerie della versione "cartella" di PyInstaller
 PUBLISHER = "PZZ"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_ID}"
 DEFAULT_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Programs" / APP_ID
@@ -124,13 +133,21 @@ def registered_install_dir() -> Path | None:
 
 def install(install_dir: Path, shortcuts: bool, register: bool, log=lambda msg: None) -> None:
     src = payload_dir()
-    if not (src / APP_EXE).exists():
+    # Versione "cartella" (exe + _internal, avvio rapido) o, nei pacchetti vecchi, exe singolo
+    program = src / "app" if (src / "app" / APP_EXE).exists() else src
+    if not (program / APP_EXE).exists():
         raise RuntimeError(f"File {APP_EXE} non trovato nel pacchetto di installazione.")
     install_dir.mkdir(parents=True, exist_ok=True)
 
     log("Copia del programma...")
     try:
-        shutil.copy2(src / APP_EXE, install_dir / APP_EXE)
+        # Prima l'exe: se il programma è aperto fallisce subito, senza lasciare
+        # l'installazione a metà.
+        shutil.copy2(program / APP_EXE, install_dir / APP_EXE)
+        internal = install_dir / INTERNAL_DIR
+        shutil.rmtree(internal, ignore_errors=True)
+        if (program / INTERNAL_DIR).is_dir():
+            shutil.copytree(program / INTERNAL_DIR, internal)
     except PermissionError:
         raise RuntimeError(f"{APP_NAME} è in esecuzione: chiudilo e riprova.") from None
 
@@ -172,6 +189,7 @@ def uninstall(install_dir: Path, remove_data: bool) -> None:
     except OSError:
         pass
     (install_dir / APP_EXE).unlink(missing_ok=True)
+    shutil.rmtree(install_dir / INTERNAL_DIR, ignore_errors=True)
     if remove_data:
         for name in ("templates", "output"):
             shutil.rmtree(install_dir / name, ignore_errors=True)
@@ -217,6 +235,30 @@ class InstallerUI:
         style.configure("Horizontal.TProgressbar", troughcolor="#e2eaed", background=TEAL,
                         bordercolor="#e2eaed", lightcolor=TEAL, darkcolor=TEAL, thickness=8)
 
+        # Stessa grafica dell'app: pulsanti, campi e caselle arrotondati
+        self.kit = None
+        if UiKit is not None:
+            try:
+                self.kit = UiKit(root)
+                self.kit.install(style, {
+                    "surface": BG, "text": TEXT, "muted": MUTED, "gold": GOLD,
+                    "primary": TEAL, "primary_hover": TEAL_HOVER, "primary_press": "#125a58",
+                    "on_primary": "#ffffff", "accent": GOLD, "accent_hover": "#d39a33",
+                    "accent_press": "#bf8628", "on_accent": "#2a1a00",
+                    "secondary": "#ffffff", "secondary_hover": "#f3f7f8", "secondary_press": "#e6eef1",
+                    "on_secondary": TEXT, "secondary_border": "#d3dee3",
+                    "field": "#ffffff", "field_border": "#d3dee3", "field_hover": "#a9bcc4",
+                    "focus": TEAL, "check_border": "#9fb3bb",
+                    "disabled_bg": "#e6edf0", "disabled_fg": "#9aabb2",
+                    "select_bg": "#cdeae6", "select_fg": TEXT,
+                    "trough": "#e2eaed", "thumb": "#c3d1d7", "thumb_hover": "#9fb4bc",
+                    "count_bg": "#e2f3f0", "gold_bg": "#fcf1dd", "secure_bg": "#e2f3f0",
+                    "header_bg": NAVY, "header_field": "#14374d", "header_border": "#255069",
+                    "header_hover": "#3a6a85", "header_fg": "#f1f6f8",
+                })
+            except Exception:
+                self.kit = None
+
         self._build_header()
         self.body = ttk.Frame(root, padding=(32, 22, 32, 24))
         self.body.pack(fill="both", expand=True)
@@ -241,6 +283,9 @@ class InstallerUI:
     def _build_header(self) -> None:
         c = tk.Canvas(self.root, height=96, bg=NAVY, highlightthickness=0)
         c.pack(fill="x")
+        if self.kit is not None:
+            self._header_bg = self.kit.header_image(1400, 96, NAVY, TEAL, GOLD, TEAL, flat_from=0.9)
+            c.create_image(0, 0, image=self._header_bg, anchor="nw")
         try:
             self._logo = tk.PhotoImage(file=str(resource("logo_header.png")))
             c.create_image(32, 48, image=self._logo, anchor="w")
@@ -251,7 +296,8 @@ class InstallerUI:
                       fill=GOLD, font=("Segoe UI", 8, "bold"))
         c.create_text(x, 46, anchor="nw", text=APP_NAME, fill="white",
                       font=("Segoe UI Semibold", 18, "bold"))
-        c.create_rectangle(0, 93, 600, 96, fill=GOLD, outline="")
+        if self.kit is None:
+            c.create_rectangle(0, 93, 600, 96, fill=GOLD, outline="")
 
     def _build_install_page(self, update: bool) -> None:
         b = self.body

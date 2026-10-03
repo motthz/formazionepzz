@@ -8,12 +8,18 @@ import os
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, '..'))
 
+_app_dir = os.path.join(ROOT, 'dist', 'FormazioniPZZ_app')
 _app_exe = os.path.join(ROOT, 'dist', 'FormazioniPZZ.exe')
 if not os.path.exists(_app_exe):
     _app_exe = os.path.join(ROOT, 'release', 'FormazioniPZZ.exe')
 
+# Preferita la versione "cartella" (FormazioniPZZ_dir.spec): avvio piu' rapido.
+# In mancanza si installa l'exe singolo, come nelle versioni precedenti.
+_program = ((_app_dir, os.path.join('payload', 'app')) if os.path.isdir(_app_dir)
+            else (_app_exe, 'payload'))
+
 _datas = [
-    (_app_exe, 'payload'),
+    _program,
     (os.path.join(ROOT, 'release', 'reparti.txt'), 'payload'),
     (os.path.join(ROOT, 'release', 'templates'), os.path.join('payload', 'templates')),
     (os.path.join(ROOT, 'assets', 'app_icon.ico'), 'assets'),
@@ -22,14 +28,14 @@ _datas = [
 
 a = Analysis(
     [os.path.join(SPECPATH, 'installer.py')],
-    pathex=[],
+    pathex=[ROOT],
     binaries=[],
     datas=_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['openpyxl', 'docx', 'reportlab', 'pypdf', 'PIL', 'numpy'],
+    excludes=['openpyxl', 'docx', 'reportlab', 'pypdf', 'numpy'],
     noarchive=False,
     optimize=0,
 )

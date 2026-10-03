@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import calendar
 import contextlib
 import copy as _copy_mod
@@ -14,44 +15,55 @@ import os
 import platform
 import queue
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import traceback
-from dataclasses import dataclass
+import urllib.request
+import webbrowser
+from dataclasses import dataclass, replace as dc_replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import struct
 import zlib
 
 try:
     import tkinter as tk
     from tkinter import BOTH, END, LEFT, RIGHT, X, BooleanVar, StringVar, filedialog, messagebox, ttk
+    from ui_kit import RoundedPanel, UiKit
 except ImportError:
     tk = None  # type: ignore[assignment]
+    RoundedPanel = UiKit = None  # type: ignore[assignment]
     BOTH = END = LEFT = RIGHT = X = None  # type: ignore[assignment]
     BooleanVar = StringVar = filedialog = messagebox = ttk = None  # type: ignore[assignment]
 from xml.sax.saxutils import escape
 
-from docx import Document
-from openpyxl import load_workbook
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (
-    KeepInFrame,
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
+
+if TYPE_CHECKING:
+    from reportlab.platypus import Paragraph, Table
+
+
+# python-docx, openpyxl e reportlab.platypus pesano quasi un secondo all'avvio:
+# si importano alla prima generazione, non all'apertura della finestra.
+def Document(*args, **kwargs):  # noqa: N802 - stesso nome dell'API di python-docx
+    from docx import Document as _document
+
+    return _document(*args, **kwargs)
+
+
+def load_workbook(*args, **kwargs):
+    from openpyxl import load_workbook as _load_workbook
+
+    return _load_workbook(*args, **kwargs)
 
 
 def _resolve_app_dir() -> Path:
@@ -63,10 +75,13 @@ def _resolve_app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+APP_VERSION = "2.1.0"
 APP_DIR = _resolve_app_dir()
 DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"
 DEFAULT_OUTPUT_DIR = APP_DIR / "output"
 HISTORY_FILE = APP_DIR / ".formazioni_history.json"
+HISTORY_LIMIT = 500
+PREVIEW_PREFIX = "formazioni_anteprima_"
 DEPARTMENTS_FILE = APP_DIR / "reparti.txt"
 SUPPORTED_EXTENSIONS = {".doc", ".docx", ".xls", ".xlsx", ".pdf"}
 ALL_DEPARTMENT_NAMES = {"TUTTI", "TUTTE", "ALL"}
@@ -76,8 +91,11 @@ FILENAME_PATTERN = re.compile(
 )
 SETTINGS_FILE = APP_DIR / "settings.json"
 HASHES_FILE = APP_DIR / ".template_hashes.json"
-LANG_DIR = APP_DIR / "lang"
-ICON_DIR = APP_DIR / "assets"
+# File di sola lettura (lingue, icone): nell'exe PyInstaller stanno in _MEIPASS,
+# non accanto all'exe; da sorgente coincidono con APP_DIR.
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+LANG_DIR = RESOURCE_DIR / "lang" if (RESOURCE_DIR / "lang").is_dir() else APP_DIR / "lang"
+ICON_DIR = RESOURCE_DIR / "assets" if (RESOURCE_DIR / "assets").is_dir() else APP_DIR / "assets"
 ICON_ICO = ICON_DIR / "app_icon.ico"
 ICON_PNG = ICON_DIR / "app_icon.png"
 LOGO_HEADER_PNG = ICON_DIR / "logo_header.png"
@@ -207,6 +225,8 @@ def _set_titlebar_dark(root, dark: bool) -> None:
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
                 break
+        # SWP_FRAMECHANGED|NOMOVE|NOSIZE|NOZORDER|NOACTIVATE: ridisegna subito la cornice
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010)
     except Exception:
         pass
 
@@ -221,6 +241,285 @@ _STYLE_CACHE: dict[str, object] | None = None
 _TEMPLATE_STORY_CACHE: dict[tuple, list[object]] = {}
 
 
+SYSTEM_THEME_POLL_MS = 4000
+
+
+def windows_prefers_dark() -> bool:
+    """Legge "Modalita' app" di Windows (Impostazioni > Personalizzazione > Colori)."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+    except OSError:
+        return False
+
+
+def resolve_theme(preference: str) -> str:
+    if preference == "system":
+        return "dark" if windows_prefers_dark() else "light"
+    return "dark" if preference == "dark" else "light"
+
+
+# --------------------------- ICONE ----------------------------------------
+# Icone a linea disegnate al volo nel colore del testo del pulsante: niente emoji,
+# che Windows rende con font e colori diversi da un PC all'altro.
+
+def draw_icon_png(name: str, color: str, size: int) -> bytes | None:
+    """PNG trasparente dell'icona `name`, oppure None se l'icona non esiste."""
+    import io
+    import math
+
+    from PIL import Image, ImageDraw
+
+    big = size * 4
+    s = big / 24.0  # le coordinate sono su una griglia 24x24
+    w = max(2, round(2.1 * s))
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    rgb = tuple(int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    ink = rgb + (255,)
+
+    def P(*pts):  # noqa: N802 - punti sulla griglia 24x24
+        return [(x * s, y * s) for x, y in pts]
+
+    def line(*pts):
+        d.line(P(*pts), fill=ink, width=w, joint="curve")
+        for x, y in P(pts[0], pts[-1]):
+            d.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=ink)
+
+    def box(x0, y0, x1, y1, r=2.0):
+        d.rounded_rectangle(P((x0, y0), (x1, y1)), radius=r * s, outline=ink, width=w)
+
+    def circle(cx, cy, r, fill=False):
+        bbox = P((cx - r, cy - r), (cx + r, cy + r))
+        if fill:
+            d.ellipse(bbox, fill=ink)
+        else:
+            d.ellipse(bbox, outline=ink, width=w)
+
+    def arc(cx, cy, r, start, end):
+        d.arc(P((cx - r, cy - r), (cx + r, cy + r)), start, end, fill=ink, width=w)
+
+    if name == "refresh":
+        arc(12, 12, 8, 40, 330)
+        line((20, 4), (20, 9.5), (14.5, 9.5))
+    elif name == "download":
+        line((12, 3.5), (12, 15))
+        line((7, 10.5), (12, 15.5), (17, 10.5))
+        line((4.5, 20), (19.5, 20))
+    elif name == "upload":
+        line((12, 15.5), (12, 4))
+        line((7, 8.5), (12, 3.5), (17, 8.5))
+        line((4.5, 20), (19.5, 20))
+    elif name == "plus":
+        line((12, 5), (12, 19))
+        line((5, 12), (19, 12))
+    elif name == "minus":
+        line((5, 12), (19, 12))
+    elif name == "check":
+        line((5, 12.5), (10, 17.5), (19, 7))
+    elif name == "close":
+        line((6, 6), (18, 18))
+        line((18, 6), (6, 18))
+    elif name == "trash":
+        line((4, 6.5), (20, 6.5))
+        line((9.5, 6.5), (9.5, 3.5), (14.5, 3.5), (14.5, 6.5))
+        box(6, 6.5, 18, 20.5, 1.5)
+        line((10, 10.5), (10, 16.5))
+        line((14, 10.5), (14, 16.5))
+    elif name == "file":
+        line((14, 3), (6, 3), (6, 21), (18, 21), (18, 7), (14, 3), (14, 7), (18, 7))
+        line((9, 12), (15, 12))
+        line((9, 16), (15, 16))
+    elif name == "folder":
+        line((3, 19), (3, 5), (9.5, 5), (11.5, 7.5), (21, 7.5), (21, 19), (3, 19))
+    elif name == "edit":
+        line((5, 19), (5.8, 15), (16, 4.8), (19.2, 8), (9, 18.2), (5, 19))
+        line((13.8, 7), (17, 10.2))
+    elif name == "gear":
+        for k in range(8):
+            a = math.radians(k * 45)
+            line((12 + 6.2 * math.cos(a), 12 + 6.2 * math.sin(a)),
+                 (12 + 9 * math.cos(a), 12 + 9 * math.sin(a)))
+        circle(12, 12, 6.2)
+        circle(12, 12, 2.4)
+    elif name == "clock":
+        circle(12, 12, 8.5)
+        line((12, 7), (12, 12), (15.5, 14))
+    elif name == "eye":
+        arc(12, 24, 15, 233, 307)
+        arc(12, 0, 15, 53, 127)
+        circle(12, 12, 3.2)
+    elif name == "users":
+        circle(9, 8, 3.2)
+        arc(9, 20, 6.5, 200, 340)
+        circle(17, 9, 2.5)
+        arc(17, 19.5, 5, 230, 340)
+    elif name == "list":
+        for y in (6, 12, 18):
+            circle(4.5, y, 1.4, fill=True)
+            line((9, y), (20, y))
+    elif name == "lock":
+        box(5, 11, 19, 20.5, 2)
+        arc(12, 8, 4, 180, 360)
+        line((8, 11), (8, 8))
+        line((16, 11), (16, 8))
+    elif name == "table":
+        box(3.5, 4.5, 20.5, 19.5, 2)
+        line((3.5, 9.5), (20.5, 9.5))
+        line((10, 9.5), (10, 19.5))
+    else:
+        return None
+    img = img.resize((size, size), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
+# Icona per ogni testo di pulsante (chiave di traduzione)
+BUTTON_ICONS = {
+    "btn_refresh": "refresh", "btn_depts": "users", "btn_modules": "file",
+    "btn_settings": "gear", "btn_history": "clock", "btn_choose_folder": "folder",
+    "btn_selectall": "check", "btn_selectnone": "close", "btn_generate": "download",
+    "btn_preview": "eye", "bat_add_person": "plus", "bat_del_person": "minus",
+    "bat_import_file": "upload", "bat_clear": "trash", "bat_run_all": "download",
+    "bat_template_download": "table", "tm_add": "plus", "tm_edit": "edit",
+    "tm_open": "file", "tm_delete": "trash", "tm_open_folder": "folder",
+    "hi_open_pdf": "file", "hi_open_dir": "folder", "hi_reuse": "refresh",
+    "hi_remove": "trash", "de_add": "plus", "de_rename": "edit", "de_delete": "trash",
+    "st_check_now": "refresh", "secure_label": "lock", "bat_inline_title": "list",
+}
+_LEADING_SYMBOLS_RE = re.compile(r"^[^\w(«\"'*]+", re.UNICODE)
+
+
+def strip_leading_symbol(text: str) -> str:
+    """Toglie l'emoji iniziale dai testi tradotti ("⬇  Genera" -> "Genera")."""
+    return _LEADING_SYMBOLS_RE.sub("", text)
+
+
+# --------------------------- NOTIFICHE / DRAG & DROP (Windows) --------------
+
+def notify_windows(root, title: str, message: str, seconds: int = 8) -> bool:
+    """Notifica di Windows (area notifiche) se l'utente sta usando un'altra
+    finestra, piu' il lampeggio dell'icona nella barra delle applicazioni."""
+    if os.name != "nt":
+        return False
+    try:
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        if ctypes.windll.user32.GetForegroundWindow() == hwnd:
+            return False
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p),
+                        ("dwFlags", ctypes.c_uint), ("uCount", ctypes.c_uint),
+                        ("dwTimeout", ctypes.c_uint)]
+
+        flash = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x3 | 0xC, 0, 0)  # ALL|TIMERNOFG
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(flash))
+        import win32con  # type: ignore[import-not-found]
+        import win32gui  # type: ignore[import-not-found]
+
+        try:
+            hicon = win32gui.LoadImage(0, str(ICON_ICO), win32con.IMAGE_ICON, 0, 0,
+                                       win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE)
+        except Exception:  # noqa: BLE001
+            hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+        flags = win32gui.NIF_ICON | win32gui.NIF_TIP | win32gui.NIF_INFO
+        data = (hwnd, 7301, flags, 0, hicon, "Formazioni PZZ",
+                message[:255], seconds * 1000, title[:63], win32gui.NIIF_INFO)
+        win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, data)
+
+        def remove():
+            try:
+                win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (hwnd, 7301))
+            except Exception:  # noqa: BLE001
+                pass
+
+        root.after(seconds * 1000 + 2000, remove)
+        return True
+    except Exception:  # noqa: BLE001 - notifica accessoria
+        return False
+
+
+class FileDropTarget:
+    """Accetta i file trascinati da Esplora risorse su una finestra Tk (solo Windows),
+    senza librerie esterne: intercetta WM_DROPFILES sulla finestra di primo livello.
+    callback(paths, x_root, y_root) viene chiamata nel thread dell'interfaccia."""
+
+    WM_DROPFILES = 0x0233
+    GWLP_WNDPROC = -4
+
+    def __init__(self, toplevel, callback) -> None:
+        from ctypes import wintypes
+
+        self.toplevel = toplevel
+        self.callback = callback
+        user32, shell32 = ctypes.windll.user32, ctypes.windll.shell32
+        self._lresult = ctypes.c_ssize_t
+        proc_type = ctypes.WINFUNCTYPE(self._lresult, wintypes.HWND, wintypes.UINT,
+                                       wintypes.WPARAM, wintypes.LPARAM)
+        set_long = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        set_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        set_long.restype = ctypes.c_void_p
+        self._call = user32.CallWindowProcW
+        self._call.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
+                               wintypes.WPARAM, wintypes.LPARAM]
+        self._call.restype = self._lresult
+        self._query = shell32.DragQueryFileW
+        self._query.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_wchar_p, wintypes.UINT]
+        self._query.restype = wintypes.UINT
+        self._point = shell32.DragQueryPoint
+        self._point.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.POINT)]
+        self._finish = shell32.DragFinish
+        self._finish.argtypes = [ctypes.c_void_p]
+        self._to_screen = user32.ClientToScreen
+        self._to_screen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+        self._POINT = wintypes.POINT
+
+        self.hwnd = user32.GetParent(toplevel.winfo_id())
+        self._dropped: queue.Queue[tuple[list[Path], int, int]] = queue.Queue()
+        shell32.DragAcceptFiles(self.hwnd, True)
+        self._proc = proc_type(self._wndproc)  # riferimento tenuto vivo dall'oggetto
+        self._old = set_long(self.hwnd, self.GWLP_WNDPROC,
+                             ctypes.cast(self._proc, ctypes.c_void_p).value)
+        self.toplevel.after(150, self._poll)
+
+    def _poll(self) -> None:
+        while not self._dropped.empty():
+            self.callback(*self._dropped.get_nowait())
+        try:
+            self.toplevel.after(150, self._poll)
+        except tk.TclError:
+            pass  # finestra chiusa
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg != self.WM_DROPFILES:
+            return self._call(self._old, hwnd, msg, wparam, lparam)
+        try:
+            count = self._query(wparam, 0xFFFFFFFF, None, 0)
+            paths = []
+            for index in range(count):
+                length = self._query(wparam, index, None, 0)
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                self._query(wparam, index, buffer, length + 1)
+                paths.append(Path(buffer.value))
+            point = self._POINT()
+            self._point(wparam, ctypes.byref(point))
+            self._to_screen(hwnd, ctypes.byref(point))
+            x, y = point.x, point.y
+        finally:
+            self._finish(wparam)
+        # Qui dentro non si puo' chiamare Tkinter (la window procedure gira dentro il
+        # ciclo eventi di Tcl e ne corromperebbe lo stato): i file vanno in coda e
+        # li consegna _poll dal normale ciclo di Tk.
+        self._dropped.put((paths, x, y))
+        return 0
+
+
 # --------------------------- SETTINGS -------------------------------------
 
 def _default_settings() -> dict[str, Any]:
@@ -229,6 +528,11 @@ def _default_settings() -> dict[str, Any]:
         "language": DEFAULT_LANG,
         "last_template_dir": str(DEFAULT_TEMPLATE_DIR),
         "last_output_dir": str(DEFAULT_OUTPUT_DIR),
+        "pdf_watermark": "",
+        "pdf_protect": False,
+        "check_updates": True,
+        "update_source": "",
+        "last_update_check": "",
     }
 
 
@@ -285,7 +589,20 @@ def load_language(code: str) -> dict[str, str]:
 
 # --------------------------- HASHING --------------------------------------
 
+_HASH_CACHE: dict[str, tuple[int, int, str]] = {}
+
+
 def compute_template_hash(path: Path) -> str:
+    # Rileggere ogni template a ogni aggiornamento della lista e' lento con molti
+    # file o cartelle di rete: si ricalcola solo se cambiano data o dimensione.
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    key = str(path)
+    cached = _HASH_CACHE.get(key)
+    if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2]
     hasher = hashlib.md5()
     try:
         with path.open("rb") as handle:
@@ -293,7 +610,9 @@ def compute_template_hash(path: Path) -> str:
                 hasher.update(chunk)
     except OSError:
         return ""
-    return hasher.hexdigest()
+    digest = hasher.hexdigest()
+    _HASH_CACHE[key] = (stat.st_mtime_ns, stat.st_size, digest)
+    return digest
 
 
 def load_saved_hashes() -> dict[str, str]:
@@ -660,7 +979,7 @@ def _convert_with_office(source: Path, output_dir: Path, extension: str) -> Path
 
 
 def _convert_with_ms_office_batch(
-    sources: list[Path], output_dir: Path, extension: str
+    sources: list[Path], output_dir: Path, extension: str, on_each=None
 ) -> dict[Path, Path]:
     import win32com.client  # type: ignore[import-not-found]
 
@@ -691,6 +1010,8 @@ def _convert_with_ms_office_batch(
             finally:
                 document.Close(False)
             converted[source] = target
+            if on_each:
+                on_each()
     finally:
         for application in applications.values():
             application.Quit()
@@ -698,7 +1019,7 @@ def _convert_with_ms_office_batch(
 
 
 def _convert_with_office_batch(
-    sources: list[Path], output_dir: Path, extension: str
+    sources: list[Path], output_dir: Path, extension: str, on_each=None
 ) -> dict[Path, Path]:
     if not sources:
         return {}
@@ -708,7 +1029,7 @@ def _convert_with_office_batch(
     output_dir.mkdir(parents=True, exist_ok=True)
     if command == "microsoft-office":
         with _com_apartment():
-            return _convert_with_ms_office_batch(sources, output_dir, extension)
+            return _convert_with_ms_office_batch(sources, output_dir, extension, on_each)
 
     profile = output_dir / "office-profile"
     result = subprocess.run(
@@ -730,6 +1051,9 @@ def _convert_with_office_batch(
     if result.returncode != 0 or any(not path.exists() for path in converted.values()):
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"Conversione Office fallita: {detail}")
+    if on_each:
+        for _source in sources:
+            on_each()
     return converted
 
 
@@ -810,64 +1134,179 @@ def _pdf_is_landscape(pdf_path: Path) -> bool:
     return bool(reader.pages and reader.pages[0].mediabox.width > reader.pages[0].mediabox.height)
 
 
-def _build_pdf_native(
-    output_path: Path,
-    employee_name: str,
-    entry_date: str,
-    department: str,
-    role: str,
-    notes: str,
-    expanded: list[tuple[TemplateFile, int]],
-    progress_cb=None,
-) -> int:
-    total_steps = max(1, len({t.path for t, _ in expanded}) + 1)
-    step = 0
+@dataclass
+class DossierJob:
+    output_path: Path
+    employee_name: str
+    entry_date: str
+    department: str
+    templates: list[TemplateFile]
+    role: str = ""
+    notes: str = ""
+
+    def expanded(self) -> list[tuple[TemplateFile, int]]:
+        return [(t, n) for t in self.templates for n in range(1, t.copies + 1)]
+
+
+_PLACEHOLDER_RE = re.compile(r"\*(nome|data)\*", re.IGNORECASE)
+_XML_TAG_RE = re.compile(r"<[^>]+>")
+_PLACEHOLDER_SCAN: dict[tuple[str, int, int], bool] = {}
+PDF_CACHE_LIMIT = 200
+
+
+def template_has_placeholders(path: Path) -> bool:
+    """True se il modulo contiene *nome* o *data*, o se non si puo' stabilirlo
+    (.doc/.xls binari): in quel caso va preparato per ogni persona."""
+    if path.suffix.lower() not in {".docx", ".xlsx"}:
+        return True
+    try:
+        stat = path.stat()
+    except OSError:
+        return True
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key in _PLACEHOLDER_SCAN:
+        return _PLACEHOLDER_SCAN[key]
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            # Senza i tag XML un segnaposto spezzato in piu' "run" torna contiguo
+            found = any(
+                _PLACEHOLDER_RE.search(_XML_TAG_RE.sub("", archive.read(name).decode("utf-8", "ignore")))
+                for name in archive.namelist() if name.endswith(".xml")
+            )
+    except (OSError, zipfile.BadZipFile):
+        found = True
+    _PLACEHOLDER_SCAN[key] = found
+    return found
+
+
+def _pdf_cache_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    root = Path(base) / "FormazioniPZZ" if base else Path(tempfile.gettempdir()) / "FormazioniPZZ"
+    return root / "pdf-cache"
+
+
+def _cached_pdf_path(template: Path) -> Path | None:
+    digest = compute_template_hash(template)
+    if not digest:
+        return None
+    engine = re.sub(r"[^a-z]", "", (_office_command() or "none").lower())
+    return _pdf_cache_dir() / f"{digest}-{engine}.pdf"
+
+
+def _store_cached_pdf(template: Path, pdf: Path) -> Path:
+    target = _cached_pdf_path(template)
+    if target is None:
+        return pdf
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pdf, target)
+        cached = sorted(target.parent.glob("*.pdf"), key=lambda f: f.stat().st_mtime)
+        for old in cached[:-PDF_CACHE_LIMIT]:
+            old.unlink(missing_ok=True)
+        return target
+    except OSError:
+        return pdf
+
+
+def _build_native_jobs(jobs: list[DossierJob], progress_cb=None) -> list[Exception | None]:
+    """Prepara i moduli di tutti i dossier e li converte con un'unica sessione di
+    Word/Excel (o una sola chiamata a LibreOffice). I moduli senza segnaposto si
+    convertono una volta sola e restano in cache tra una generazione e l'altra.
+    Ritorna, per ogni dossier, None se riuscito oppure l'errore."""
+    results: list[Exception | None] = [None] * len(jobs)
     with tempfile.TemporaryDirectory(prefix="formazioni-pdf-") as temp_name:
         temp_dir = Path(temp_name)
-        prepared: dict[Path, Path] = {}
-
-        unique_templates = {}
-        for index, (template, _) in enumerate(expanded):
-            if template.path.suffix.lower() != ".pdf" and template.path not in prepared:
-                unique_templates[template.path] = index
-
-        for template_path, index in unique_templates.items():
-            prepared[template_path] = _prepare_office_template(
-                template_path, temp_dir / f"template-{index}", employee_name, entry_date
-            )
-            step += 1
-            if progress_cb:
-                progress_cb(step, total_steps)
-
-        if prepared:
-            converted = _convert_with_office_batch(
-                list(prepared.values()), temp_dir / "converted", "pdf"
-            )
-        else:
-            converted = {}
-        step += 1
-        if progress_cb:
-            progress_cb(step, total_steps)
-
-        # Stessa regola del motore ReportLab: niente copertina se ci sono PDF orizzontali
-        has_landscape_pdf = any(
-            template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
-            for template, _ in expanded
-        )
-        cover = [] if has_landscape_pdf else [_build_cover_pdf(
-            temp_dir / "cover.pdf", employee_name, entry_date, department, role, notes
-        )]
-        pages = cover + [
-            _remove_trailing_blank_pages(template.path, temp_dir)
-            if template.path.suffix.lower() == ".pdf"
-            else _remove_trailing_blank_pages(converted[prepared[template.path]], temp_dir)
-            for template, _copy_number in expanded
+        names = iter(range(1, 1_000_000))
+        ready: dict[Path, Path] = {}            # moduli fissi gia' convertiti (cache)
+        static_sources: dict[Path, Path] = {}   # moduli fissi da convertire una volta
+        personal: dict[tuple[int, Path], Path] = {}
+        office_paths = [
+            list(dict.fromkeys(t.path for t in job.templates if t.path.suffix.lower() != ".pdf"))
+            for job in jobs
         ]
-        _merge_pdfs(output_path, pages)
-    return len(expanded)
+        total = max(1, sum(len(paths) for paths in office_paths) * 2 + len(jobs))
+        step = 0
+
+        def tick():
+            nonlocal step
+            step = min(step + 1, total)
+            if progress_cb:
+                progress_cb(step, total)
+
+        for index, job in enumerate(jobs):
+            try:
+                for template_path in office_paths[index]:
+                    if not template_has_placeholders(template_path):
+                        if template_path not in ready and template_path not in static_sources:
+                            cached = _cached_pdf_path(template_path)
+                            if cached is not None and cached.exists():
+                                ready[template_path] = cached
+                            else:
+                                copy = temp_dir / f"{next(names)}-{template_path.name}"
+                                shutil.copy2(template_path, copy)
+                                static_sources[template_path] = copy
+                    else:
+                        prepared = _prepare_office_template(
+                            template_path, temp_dir / f"job-{index}-{next(names)}",
+                            job.employee_name, job.entry_date)
+                        # Nome univoco: i convertitori chiamano il PDF come il sorgente
+                        unique = prepared.with_name(f"{next(names)}-{prepared.name}")
+                        prepared.rename(unique)
+                        personal[(index, template_path)] = unique
+                    tick()
+            except Exception as exc:  # noqa: BLE001 - l'errore resta legato a quel dossier
+                results[index] = exc
+
+        sources = list(static_sources.values()) + [
+            source for (index, _), source in personal.items() if results[index] is None
+        ]
+        converted = _convert_with_office_batch(
+            sources, temp_dir / "converted", "pdf", on_each=tick) if sources else {}
+        for template_path, source in static_sources.items():
+            trimmed = _remove_trailing_blank_pages(converted[source], temp_dir)
+            ready[template_path] = _store_cached_pdf(template_path, trimmed)
+
+        trimmed_cache: dict[Path, Path] = {}
+
+        def trimmed(pdf: Path) -> Path:
+            if pdf not in trimmed_cache:
+                trimmed_cache[pdf] = _remove_trailing_blank_pages(pdf, temp_dir)
+            return trimmed_cache[pdf]
+
+        for index, job in enumerate(jobs):
+            if results[index] is not None:
+                tick()
+                continue
+            try:
+                expanded = job.expanded()
+                # Stessa regola del motore ReportLab: niente copertina se ci sono PDF orizzontali
+                has_landscape_pdf = any(
+                    template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
+                    for template, _ in expanded
+                )
+                cover = [] if has_landscape_pdf else [_build_cover_pdf(
+                    temp_dir / f"cover-{index}.pdf", job.employee_name, job.entry_date,
+                    job.department, job.role, job.notes,
+                )]
+                pages = cover + [
+                    trimmed(template.path) if template.path.suffix.lower() == ".pdf"
+                    else ready.get(template.path)
+                    or trimmed(converted[personal[(index, template.path)]])
+                    for template, _copy_number in expanded
+                ]
+                job.output_path.parent.mkdir(parents=True, exist_ok=True)
+                _merge_pdfs(job.output_path, pages)
+            except Exception as exc:  # noqa: BLE001
+                results[index] = exc
+            tick()
+    return results
 
 
 def paragraph_text(text: str, style: ParagraphStyle) -> Paragraph:
+    from reportlab.platypus import Paragraph
+
     safe = escape(text).replace("\n", "<br/>")
     return Paragraph(safe or " ", style)
 
@@ -896,6 +1335,8 @@ def _table_widths(values: list[list[str]], available_width: float = TABLE_WIDTH)
 
 
 def _table_flowable(rows: list[list[object]], raw_values: list[list[str]]) -> Table:
+    from reportlab.platypus import Table, TableStyle
+
     column_count = max((len(row) for row in rows), default=0)
     rows = [row + [""] * (column_count - len(row)) for row in rows]
     raw_values = [row + [""] * (column_count - len(row)) for row in raw_values]
@@ -927,6 +1368,8 @@ def docx_story(
     entry_date: str,
     styles: dict[str, ParagraphStyle],
 ) -> list[object]:
+    from reportlab.platypus import Spacer
+
     document = Document(path)
     replace_docx_placeholders(document, employee_name, entry_date)
     story: list[object] = []
@@ -970,6 +1413,8 @@ def xlsx_story(
     entry_date: str,
     styles: dict[str, ParagraphStyle],
 ) -> list[object]:
+    from reportlab.platypus import Paragraph, Spacer
+
     workbook = load_workbook(path, data_only=False, read_only=False)
     story: list[object] = []
     try:
@@ -1042,6 +1487,8 @@ def pdf_story(
     frame_width: float = 174 * mm,
     frame_height: float = 263 * mm,
 ) -> list[object]:
+    from reportlab.platypus import KeepInFrame, PageBreak, Paragraph, Spacer
+
     story: list[object] = []
     pdf_style = styles["pdf_page"]
     is_landscape = frame_width > frame_height
@@ -1099,6 +1546,8 @@ def _cover_story(
     role: str,
     notes: str,
 ) -> list[object]:
+    from reportlab.platypus import Spacer
+
     cover_rows_raw = [
         ["Campo", "Valore"],
         ["Nome e Cognome", employee_name],
@@ -1137,6 +1586,8 @@ def _build_cover_pdf(
     role: str,
     notes: str,
 ) -> Path:
+    from reportlab.platypus import SimpleDocTemplate
+
     doc = SimpleDocTemplate(
         str(output_path),
         pagesize=A4,
@@ -1148,6 +1599,76 @@ def _build_cover_pdf(
     return output_path
 
 
+def _watermark_page(text: str, width: float, height: float):
+    """Pagina PDF trasparente con la filigrana in diagonale, centrata."""
+    import io
+    import math
+
+    from pypdf import PdfReader
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    font = "Helvetica-Bold"
+    diagonal = math.hypot(width, height)
+    size = min(120.0, 0.7 * diagonal / max(stringWidth(text, font, 1), 1))
+    buffer = io.BytesIO()
+    canvas = rl_canvas.Canvas(buffer, pagesize=(width, height))
+    canvas.saveState()
+    canvas.setFillColor(colors.HexColor("#7f939b"))
+    canvas.setFillAlpha(0.16)
+    canvas.translate(width / 2, height / 2)
+    canvas.rotate(math.degrees(math.atan2(height, width)))
+    canvas.setFont(font, size)
+    canvas.drawCentredString(0, -size / 3, text)
+    canvas.restoreState()
+    canvas.save()
+    buffer.seek(0)
+    return PdfReader(buffer).pages[0]
+
+
+def finalize_pdf(
+    path: Path,
+    title: str,
+    subject: str,
+    watermark: str = "",
+    protect: bool = False,
+) -> None:
+    """Metadati, filigrana opzionale e blocco modifiche opzionale sul PDF finale."""
+    from pypdf import PdfReader, PdfWriter, Transformation
+    from pypdf.constants import UserAccessPermissions as Perm
+
+    writer = PdfWriter(clone_from=PdfReader(str(path)))
+    watermark = watermark.strip()
+    if watermark:
+        overlays: dict[tuple[int, int], Any] = {}
+        for page in writer.pages:
+            box = page.mediabox
+            key = (round(float(box.width)), round(float(box.height)))
+            if key not in overlays:
+                overlays[key] = _watermark_page(watermark, float(box.width), float(box.height))
+            page.merge_transformed_page(
+                overlays[key], Transformation().translate(float(box.left), float(box.bottom))
+            )
+    writer.add_metadata({
+        "/Title": title,
+        "/Author": "Formazioni PZZ",
+        "/Subject": subject,
+        "/Creator": f"Formazioni PZZ {APP_VERSION}",
+        "/Producer": f"Formazioni PZZ {APP_VERSION}",
+    })
+    if protect:
+        everything = functools.reduce(lambda a, b: a | b, Perm)
+        blocked = Perm.MODIFY | Perm.ADD_OR_MODIFY | Perm.ASSEMBLE_DOC | Perm.FILL_FORM_FIELDS
+        # Si apre senza password; la password proprietario casuale impedisce di
+        # togliere il blocco. RC4 non richiede librerie crittografiche esterne.
+        writer.encrypt(user_password="", owner_password=secrets.token_hex(16),
+                       permissions_flag=everything & ~blocked, algorithm="RC4-128")
+    temp_path = path.with_name(path.stem + ".finalizing.pdf")
+    with temp_path.open("wb") as handle:
+        writer.write(handle)
+    os.replace(temp_path, path)
+
+
 def build_pdf(
     output_path: Path,
     employee_name: str,
@@ -1157,7 +1678,120 @@ def build_pdf(
     notes: str,
     templates: list[TemplateFile],
     progress_cb=None,
+    *,
+    watermark: str = "",
+    protect: bool = False,
 ) -> int:
+    total = _build_pdf_content(output_path, employee_name, entry_date, department,
+                               role, notes, templates, progress_cb)
+    _finalize_dossier(output_path, employee_name, entry_date, department, watermark, protect)
+    return total
+
+
+def _finalize_dossier(output_path: Path, employee_name: str, entry_date: str,
+                      department: str, watermark: str, protect: bool) -> None:
+    try:
+        finalize_pdf(output_path, f"Dossier formazione - {employee_name}",
+                     f"Reparto: {department} - Ingresso: {entry_date}",
+                     watermark=watermark, protect=protect)
+    except Exception:
+        # Filigrana e protezione richieste esplicitamente: l'errore va mostrato.
+        # I soli metadati sono accessori e non devono far fallire il dossier.
+        if watermark.strip() or protect:
+            raise
+        traceback.print_exc()
+
+
+def _build_job(job: DossierJob, watermark: str, protect: bool) -> None:
+    """Un dossier completo; funzione di modulo per poterla eseguire in un altro processo."""
+    build_pdf(job.output_path, job.employee_name, job.entry_date, job.department,
+              job.role, job.notes, job.templates, watermark=watermark, protect=protect)
+
+
+def build_pdfs(
+    jobs: list[DossierJob],
+    progress_cb=None,
+    *,
+    watermark: str = "",
+    protect: bool = False,
+) -> list[Exception | None]:
+    """Genera piu' dossier. Con Office: una sola sessione per tutto il lotto.
+    Senza Office (motore ReportLab): piu' dossier in parallelo su processi separati.
+    Ritorna, per ogni dossier, None se riuscito oppure l'errore."""
+    results: list[Exception | None] = [None] * len(jobs)
+    pending = list(range(len(jobs)))
+    if not jobs:
+        return results
+    if _office_command():
+        try:
+            native = _build_native_jobs(jobs, progress_cb)
+            for index, error in enumerate(native):
+                if error is None:
+                    job = jobs[index]
+                    try:
+                        _finalize_dossier(job.output_path, job.employee_name, job.entry_date,
+                                          job.department, watermark, protect)
+                    except Exception as exc:  # noqa: BLE001
+                        results[index] = exc
+            pending = [index for index, error in enumerate(native) if error is not None]
+        except Exception:  # noqa: BLE001 - conversione di gruppo fallita: uno alla volta
+            traceback.print_exc()
+        # I falliti si riprovano singolarmente (con il ripiego su ReportLab)
+        for done, index in enumerate(pending, start=1):
+            try:
+                _build_job(jobs[index], watermark, protect)
+            except Exception as exc:  # noqa: BLE001
+                results[index] = exc
+            if progress_cb:
+                progress_cb(done, len(pending))
+        return results
+
+    finished: set[int] = set()
+
+    def record(index: int, error: Exception | None) -> None:
+        results[index] = error
+        finished.add(index)
+        if progress_cb:
+            progress_cb(len(finished), len(jobs))
+
+    workers = min(len(jobs), 4, max(1, (os.cpu_count() or 2) - 1))
+    if workers > 1 and len(jobs) >= 3:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_build_job, jobs[i], watermark, protect): i for i in pending}
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                        record(futures[future], None)
+                    except Exception as exc:  # noqa: BLE001
+                        record(futures[future], exc)
+        except Exception:  # noqa: BLE001 - processi non disponibili: si prosegue in sequenza
+            traceback.print_exc()
+    for index in pending:
+        if index in finished:
+            continue
+        try:
+            _build_job(jobs[index], watermark, protect)
+            record(index, None)
+        except Exception as exc:  # noqa: BLE001
+            record(index, exc)
+    return results
+
+
+def _build_pdf_content(
+    output_path: Path,
+    employee_name: str,
+    entry_date: str,
+    department: str,
+    role: str,
+    notes: str,
+    templates: list[TemplateFile],
+    progress_cb=None,
+) -> int:
+    from reportlab.platypus import PageBreak, SimpleDocTemplate, Table
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     styles = make_styles()
     expanded = [
@@ -1172,10 +1806,12 @@ def build_pdf(
     if _office_command():
         # Il motore Office conserva il layout originale dei template (loghi, tabelle, immagini)
         try:
-            return _build_pdf_native(
-                output_path, employee_name, entry_date, department, role, notes, expanded,
-                progress_cb=progress_cb,
-            )
+            error = _build_native_jobs([DossierJob(
+                output_path, employee_name, entry_date, department, templates, role, notes,
+            )], progress_cb)[0]
+            if error is None:
+                return len(expanded)
+            raise error
         except Exception:
             if needs_legacy_office:
                 raise
@@ -1270,6 +1906,91 @@ def open_folder(path: Path) -> None:
         pass
 
 
+def write_batch_template(path: Path, departments: list[str], italian: bool = True) -> None:
+    """Crea un file Excel pronto da compilare per la generazione multipla."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    headers = ["Nome", "Data", "Reparto"] if italian else ["Name", "Date", "Department"]
+    rows_with_rules = 500
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Dipendenti" if italian else "Employees"
+    sheet.append(headers)
+    example_dept = next((d for d in departments if d.upper() not in ALL_DEPARTMENT_NAMES),
+                        departments[0] if departments else "TUTTI")
+    sheet.append(["Mario Rossi", date.today(), example_dept])
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="0B2A3D")
+        cell.alignment = Alignment(vertical="center")
+    for row in range(2, rows_with_rules + 2):
+        sheet.cell(row=row, column=2).number_format = "DD/MM/YYYY"
+    for column, width in zip("ABC", (34, 16, 28)):
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A2"
+
+    date_rule = DataValidation(type="date", operator="greaterThan", formula1="DATE(1990,1,1)",
+                               allow_blank=True, errorStyle="warning")
+    date_rule.error = "Data non valida (gg/mm/aaaa)" if italian else "Invalid date (dd/mm/yyyy)"
+    sheet.add_data_validation(date_rule)
+    date_rule.add(f"B2:B{rows_with_rules + 1}")
+    if departments:
+        # Elenco reparti su un foglio nascosto: niente limite di 255 caratteri.
+        lists = workbook.create_sheet("Reparti" if italian else "Departments")
+        for index, dept in enumerate(departments, start=1):
+            lists.cell(row=index, column=1, value=dept)
+        lists.sheet_state = "hidden"
+        dept_rule = DataValidation(type="list", allow_blank=True, errorStyle="warning",
+                                   formula1=f"='{lists.title}'!$A$1:$A${len(departments)}")
+        dept_rule.error = ("Reparto non in elenco. Per più reparti usa A+B."
+                           if italian else "Department not listed. For several use A+B.")
+        sheet.add_data_validation(dept_rule)
+        dept_rule.add(f"C2:C{rows_with_rules + 1}")
+    workbook.save(path)
+
+
+def parse_version(value: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", str(value))
+    return tuple(int(p) for p in parts[:4]) or (0,)
+
+
+def fetch_update_manifest(source: str, timeout: float = 4.0) -> dict[str, str] | None:
+    """Legge il manifest {version, url, notes} da un URL http(s) o da un percorso
+    locale / di rete (file version.json o cartella che lo contiene)."""
+    source = source.strip()
+    if not source:
+        return None
+    if source.lower().startswith(("http://", "https://")):
+        request = urllib.request.Request(
+            source, headers={"User-Agent": f"FormazioniPZZ/{APP_VERSION}"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8-sig"))
+        default_url = ""
+    else:
+        manifest = Path(source).expanduser()
+        if manifest.is_dir():
+            manifest = manifest / "version.json"
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        default_url = str(manifest.parent / "FormazioniPZZ_Setup.exe")
+    if not isinstance(data, dict) or not data.get("version"):
+        raise ValueError("Manifest aggiornamenti non valido: manca 'version'.")
+    return {
+        "version": str(data["version"]),
+        "url": str(data.get("url") or default_url),
+        "notes": str(data.get("notes") or ""),
+    }
+
+
+def cleanup_old_previews() -> None:
+    for old in Path(tempfile.gettempdir()).glob(f"{PREVIEW_PREFIX}*.pdf"):
+        try:
+            old.unlink()
+        except OSError:
+            pass  # ancora aperta nel visualizzatore: sara' rimossa al prossimo avvio
+
+
 # --------------------------- UI HELPERS -----------------------------------
 
 class Tooltip:
@@ -1323,14 +2044,14 @@ class Tooltip:
         except Exception:
             pass
         try:
-            t.configure(bg="#fff2a8")
+            t.configure(bg="#0b2a3d")
         except Exception:
             pass
-        frame = tk.Frame(t, bg="#fff2a8", highlightthickness=1,
-                         highlightbackground="#b39800", padx=8, pady=4)
+        frame = tk.Frame(t, bg="#0b2a3d", highlightthickness=1,
+                         highlightbackground="#1f8a87", padx=11, pady=7)
         frame.pack(fill=BOTH, expand=True)
         label = tk.Label(frame, text=text, justify="left",
-                         bg="#fff2a8", fg="#2a1a00",
+                         bg="#0b2a3d", fg="#f1f6f8",
                          font=("Segoe UI", 9), wraplength=360)
         label.pack()
         self.widget.update_idletasks()
@@ -1556,7 +2277,11 @@ class FormazioniApp:
         self.department = StringVar()
         self.auto_open = BooleanVar(value=True)
         self.multi_dept_mode = BooleanVar(value=False)
-        self.theme = StringVar(value=self.settings.get("theme", DEFAULT_THEME))
+        # theme_pref e' la scelta dell'utente (light/dark/system); self.theme il tema
+        # effettivamente applicato, sempre "light" o "dark".
+        pref = self.settings.get("theme", DEFAULT_THEME)
+        self.theme_pref = pref if pref in ("light", "dark", "system") else DEFAULT_THEME
+        self.theme = StringVar(value=resolve_theme(self.theme_pref))
         self.language_var = StringVar(value=self.language_code)
         self.status = StringVar(value=self.tr("status_initial"))
         self.count_label = StringVar(value=self.tr("count_none"))
@@ -1572,6 +2297,8 @@ class FormazioniApp:
         self._current_width = 1120
         self._current_breakpoint = "wide"
         self._progressbar: ttk.Progressbar | None = None
+        self._history_lock = threading.Lock()
+        self._update_check_running = False
 
         self.root.title(self.tr("app_title"))
         self.root.geometry("1120x820")
@@ -1589,6 +2316,13 @@ class FormazioniApp:
         self._install_drain_loop()
         self.root.bind("<Configure>", self._on_root_resize)
         self.refresh_templates()
+        self._bind_shortcuts()
+        self._install_file_drop()
+        self.root.after(SYSTEM_THEME_POLL_MS, self._follow_system_theme)
+        threading.Thread(target=cleanup_old_previews, daemon=True).start()
+        if self.settings.get("check_updates") and \
+                self.settings.get("last_update_check") != date.today().isoformat():
+            self.root.after(2500, lambda: self.check_for_updates(manual=False))
 
     # ----------------------------- Utilities ------------------------------
     def tr(self, key: str, **kwargs: Any) -> str:
@@ -1598,8 +2332,19 @@ class FormazioniApp:
         except (KeyError, IndexError):
             return raw
 
+    def _follow_system_theme(self) -> None:
+        """Con il tema "Sistema" segue i cambi di Windows chiaro/scuro mentre l'app e' aperta."""
+        try:
+            if self.theme_pref == "system" and not self._worker_active:
+                wanted = resolve_theme("system")
+                if wanted != self.theme.get():
+                    self.theme.set(wanted)
+                    self._rebuild_ui()
+        finally:
+            self.root.after(SYSTEM_THEME_POLL_MS, self._follow_system_theme)
+
     def _persist_settings(self) -> None:
-        self.settings["theme"] = self.theme.get()
+        self.settings["theme"] = self.theme_pref
         self.settings["language"] = self.language_code
         self.settings["last_template_dir"] = self.template_dir.get()
         self.settings["last_output_dir"] = self.output_dir.get()
@@ -1613,6 +2358,13 @@ class FormazioniApp:
         else:
             self.root.configure(bg="#f0f4f6")
         _set_titlebar_dark(self.root, theme == "dark")
+        if not getattr(self, "_toplevel_titlebar_bound", False):
+            # Anche le finestre secondarie (impostazioni, storico, ...) seguono il tema
+            self.root.bind_class(
+                "Toplevel", "<Map>",
+                lambda e: _set_titlebar_dark(e.widget, self.theme.get() == "dark")
+                if e.widget.winfo_toplevel() is e.widget else None, add="+")
+            self._toplevel_titlebar_bound = True
 
     def _configure_style(self):
         dark = self.theme.get() == "dark"
@@ -1854,7 +2606,37 @@ class FormazioniApp:
             "count_fg": count_fg, "primary_bg": primary_bg,
             "row_even": row_even, "row_tutti": row_tutti,
             "row_modified": row_modified, "row_new": row_new,
+            "title_fg_strong": title_fg, "sh_shadow": "#000000" if dark else "#1b3a4b",
         }
+
+        # Elementi arrotondati disegnati con ui_kit (pulsanti, campi, card...)
+        if getattr(self, "_kit", None) is None:
+            self._kit = UiKit(self.root)
+        self._kit.install(style, {
+            "surface": card_body_bg, "text": text, "muted": text_muted, "gold": gold,
+            "primary": primary_bg, "primary_hover": primary_hover, "primary_press": primary_press,
+            "on_primary": primary_fg,
+            "accent": accent_btn_bg,
+            "accent_hover": "#ecb655" if dark else "#d39a33",
+            "accent_press": "#c98f2c" if dark else "#bf8628",
+            "on_accent": accent_btn_fg,
+            "secondary": secondary_bg, "secondary_hover": secondary_hover,
+            "secondary_press": secondary_press, "on_secondary": secondary_fg,
+            "secondary_border": "#2c4250" if dark else "#d9e3e7",
+            "field": field_bg, "field_border": border,
+            "field_hover": "#3d5664" if dark else "#a9bcc4",
+            "focus": focus, "check_border": "#4a6472" if dark else "#9fb3bb",
+            "disabled_bg": "#1a2832" if dark else "#eef2f4",
+            "disabled_fg": "#5d7480" if dark else "#9aabb2",
+            "select_bg": "#1d4d4c" if dark else "#cdeae6", "select_fg": text,
+            "trough": "#1f303b" if dark else "#e4ecef",
+            "thumb": "#34505e" if dark else "#c3d1d7",
+            "thumb_hover": "#4a6b7a" if dark else "#9fb4bc",
+            "count_bg": count_bg, "gold_bg": gold_bg, "secure_bg": secure_bg,
+            "header_bg": title_bg, "header_field": "#12222c" if dark else "#14374d",
+            "header_border": "#22394a" if dark else "#255069",
+            "header_hover": "#35576a" if dark else "#3a6a85", "header_fg": "#f1f6f8",
+        })
 
     # ---------------------------- Scaffold --------------------------------
     def _build_scaffold(self):
@@ -1890,10 +2672,6 @@ class FormazioniApp:
         c = tk.Canvas(header_outer, height=148, highlightthickness=0, bd=0, bg=title_bg)
         c.pack(fill=X, side="top")
 
-        # Cerchi decorativi a destra (sotto i controlli): tonalita' appena piu'
-        # chiare dello sfondo, per dare profondita' senza disturbare il testo.
-        deco = ("#0d1c26", "#11232f", "#163040") if dark else ("#0f3249", "#133a53", "#1a4862")
-
         try:
             if LOGO_HEADER_PNG.exists():
                 logo_img = tk.PhotoImage(file=str(LOGO_HEADER_PNG))
@@ -1910,30 +2688,38 @@ class FormazioniApp:
         colors = self._style_colors
         # Logo e testi disegnati direttamente sul canvas: niente riquadri di
         # sfondo pieno, cosi' le decorazioni restano visibili dietro al testo.
+        glow = "#1f8a87" if not dark else "#1a6f6c"
+        header_state = {"w": 0, "img": None, "job": None}
+
         def paint_header(_evt=None):
+            header_state["job"] = None
             w = max(c.winfo_width(), 1)
+            if w == header_state["w"] and _evt is not None:
+                return
+            header_state["w"] = w
             c.delete("all")
-            c.create_rectangle(0, 0, w, 148, fill=title_bg, outline="")
-            c.create_oval(w - 330, 60, w + 90, 480, fill=deco[0], outline="")
-            c.create_oval(w - 190, 78, w + 50, 318, fill=deco[1], outline="")
-            c.create_oval(w - 420, 104, w - 300, 224, fill=deco[0], outline="")
-            c.create_oval(w - 92, 112, w - 52, 152, fill=deco[2], outline="")
+            # Sfondo renderizzato: sfumatura, bagliori sfocati, puntinatura e filetto oro
+            header_state["img"] = self._kit.header_image(
+                w, 148, title_bg, glow, colors["gold"], colors["primary_bg"])
+            c.create_image(0, 0, image=header_state["img"], anchor="nw")
             x = 42
             if self._header_logo is not None:
-                c.create_image(x, 74, image=self._header_logo, anchor="w")
+                c.create_image(x, 72, image=self._header_logo, anchor="w")
                 x += self._header_logo.width() + 22
-            item = c.create_text(x, 26, anchor="nw", text=self.tr("eyebrow"),
-                                 fill=colors["gold"], font=("Segoe UI", 8, "bold"))
-            item = c.create_text(x - 2, c.bbox(item)[3] + 2, anchor="nw",
+            item = c.create_text(x, 24, anchor="nw", text=self.tr("eyebrow"),
+                                 fill=colors["gold"], font=("Segoe UI Variable Text Semibold", 8, "bold"))
+            item = c.create_text(x - 2, c.bbox(item)[3] + 1, anchor="nw",
                                  text=self.tr("header_title"), fill=colors["title_fg"],
-                                 font=("Segoe UI Semibold", 26, "bold"))
-            c.create_text(x, c.bbox(item)[3] + 2, anchor="nw",
+                                 font=("Segoe UI Variable Display Semib", 27, "bold"))
+            c.create_text(x, c.bbox(item)[3] + 1, anchor="nw",
                           text=self.tr("header_subtitle"), fill=colors["subtitle_fg"],
-                          font=("Segoe UI", 10))
-            # Filetto inferiore: oro che sfuma nel colore primario
-            self._draw_hgradient(c, w, 145, 3, colors["gold"], colors["primary_bg"])
+                          font=("Segoe UI Variable Text", 10))
 
-        c.bind("<Configure>", paint_header)
+        def schedule_paint(_evt=None):
+            if header_state["job"] is None:
+                header_state["job"] = c.after(30, paint_header, _evt)
+
+        c.bind("<Configure>", schedule_paint)
         c.after(1, paint_header)
 
         controls = tk.Frame(header_outer, bg=title_bg)
@@ -1944,11 +2730,12 @@ class FormazioniApp:
         tk.Label(row, text=self.tr("lbl_theme") + "  ", bg=title_bg,
                  fg=self._style_colors["subtitle_fg"],
                  font=("Segoe UI Semibold", 9, "bold")).pack(side=LEFT)
+        theme_choices = ("light", "dark", "system")
         theme_switch = ttk.Combobox(
-            row, values=[self.tr("theme_light"), self.tr("theme_dark")],
-            state="readonly", width=9
+            row, values=[self.tr("theme_light"), self.tr("theme_dark"), self.tr("theme_system")],
+            state="readonly", width=9, style="Header.TCombobox"
         )
-        theme_switch.current(0 if self.theme.get() == "light" else 1)
+        theme_switch.current(theme_choices.index(self.theme_pref))
         theme_switch.pack(side=LEFT, padx=(0, 18))
         try:
             _reg = getattr(self, "_register_local_wheel", None)
@@ -1968,7 +2755,8 @@ class FormazioniApp:
             labels.append(code.upper())
             if code == self.language_var.get():
                 current_idx = i
-        lang_combo = ttk.Combobox(row, values=labels, state="readonly", width=6)
+        lang_combo = ttk.Combobox(row, values=labels, state="readonly", width=6,
+                                  style="Header.TCombobox")
         lang_combo.current(current_idx)
         lang_combo.pack(side=LEFT)
         try:
@@ -1981,12 +2769,14 @@ class FormazioniApp:
 
         def on_theme(_e=None):
             chosen = theme_switch.current()
-            new_theme = "light" if chosen == 0 else "dark"
-            if new_theme == self.theme.get():
+            if not 0 <= chosen < len(theme_choices):
                 return
-            self.theme.set(new_theme)
+            self.theme_pref = theme_choices[chosen]
             self._persist_settings()
-            self._rebuild_ui()
+            new_theme = resolve_theme(self.theme_pref)
+            if new_theme != self.theme.get():
+                self.theme.set(new_theme)
+                self._rebuild_ui()
 
         def on_lang(_e=None):
             idx = lang_combo.current()
@@ -2137,7 +2927,7 @@ class FormazioniApp:
         canvas_wrap.bind_all("<Button-4>", _on_wheel_up, add="+")
         canvas_wrap.bind_all("<Button-5>", _on_wheel_down, add="+")
 
-        self._body = body = ttk.Frame(scrolled, style="App.TFrame", padding=(30, 6, 30, 10))
+        self._body = body = ttk.Frame(scrolled, style="App.TFrame", padding=(16, 6, 16, 4))
         body.pack(fill=BOTH, expand=True)
         body.columnconfigure(0, weight=5)
         body.columnconfigure(1, weight=4)
@@ -2152,14 +2942,14 @@ class FormazioniApp:
 
     def _card(self, parent, title=None, subtitle=None, accent=None, **kwargs):
         colors = self._style_colors
-        # Ombra morbida in basso a destra (sh1) + bordo sottile (sh2) attorno alla card
-        shadow1 = tk.Frame(parent, bg=colors["sh1"], highlightthickness=0)
-        shadow2 = tk.Frame(shadow1, bg=colors["sh2"], padx=1, pady=1)
-        shadow2.pack(fill=BOTH, expand=True, padx=(0, 1), pady=(0, 2))
-        card = tk.Frame(shadow2, bg=colors["card_bg"])
-        card.pack(fill=BOTH, expand=True)
-        inner = tk.Frame(card, bg=colors["card_body_bg"], padx=26, pady=22)
-        inner.pack(fill=BOTH, expand=True)
+        # Card arrotondata con bordo sottile e ombra morbida (disegnata da ui_kit)
+        panel = RoundedPanel(parent, self._kit, outer_bg=colors["app_bg"],
+                             fill=colors["card_body_bg"], border=colors["sh2"],
+                             shadow=colors["sh_shadow"],
+                             shadow_alpha=150 if self.theme.get() == "dark" else 38,
+                             padx=22, pady=18)
+        shadow1 = panel
+        inner = panel.inner
 
         head = tk.Frame(inner, bg=colors["card_body_bg"])
         head.pack(fill=X)
@@ -2169,9 +2959,12 @@ class FormazioniApp:
             if accent and "·" in accent:
                 number, label = (part.strip() for part in accent.split("·", 1))
             if number:
-                tk.Label(head, text=number, bg=colors["count_bg"], fg=colors["count_fg"],
-                         font=("Segoe UI Semibold", 12, "bold"), width=3, pady=6,
-                         ).pack(side=LEFT, padx=(0, 14), anchor="n")
+                kit = self._kit
+                badge = kit.pill(kit.px(42), kit.px(42), colors["count_bg"], r=kit.px(12))
+                tk.Label(head, text=number, image=badge, compound="center", bd=0,
+                         bg=colors["card_body_bg"], fg=colors["count_fg"],
+                         font=("Segoe UI Variable Display Semib", 13, "bold"),
+                         ).pack(side=LEFT, padx=(0, 14), anchor="center")
             left = tk.Frame(head, bg=colors["card_body_bg"])
             left.pack(side=LEFT, fill=X, expand=True)
             if label:
@@ -2180,9 +2973,11 @@ class FormazioniApp:
                 ttk.Label(left, text=title, style="Section.TLabel").pack(anchor="w", pady=(1, 0))
             # Divisore: breve tratto oro su linea sottile
             divider = tk.Frame(inner, bg=colors["card_body_bg"], height=3)
-            divider.pack(fill=X, pady=(16, 20))
+            divider.pack(fill=X, pady=(16, 18))
             tk.Frame(divider, bg=colors["sh2"]).place(x=0, y=1, relwidth=1.0, height=1)
-            tk.Frame(divider, bg=colors["gold"]).place(x=0, y=0, width=56, height=3)
+            accent_line = self._kit.pill(self._kit.px(48), 3, colors["gold"])
+            tk.Label(divider, image=accent_line, bd=0, bg=colors["card_body_bg"]
+                     ).place(x=0, y=0, height=3)
 
         if subtitle:
             ttk.Label(inner, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
@@ -2221,7 +3016,7 @@ class FormazioniApp:
             accent=self.tr("card01_accent"),
             subtitle=self.tr("card01_subtitle"),
         )
-        src_shadow.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+        src_shadow.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 2))
         src_body.columnconfigure(1, weight=1)
         src_body.columnconfigure(2, weight=0)
 
@@ -2232,7 +3027,7 @@ class FormazioniApp:
                      ).grid(row=r, column=0, sticky="we", padx=(0, 18), pady=(0, 4))
             ent = ttk.Entry(src_body, textvariable=var)
             ent.grid(row=r, column=1, sticky="ew", padx=(0, 10), pady=(0, 14))
-            btn = ttk.Button(src_body, text=self.tr("btn_choose_folder"),
+            btn = self._button(src_body, "btn_choose_folder",
                              style="Secondary.TButton", command=btn_cmd)
             btn.grid(row=r, column=2, sticky="ew", pady=(0, 14))
             return ent, btn
@@ -2248,18 +3043,26 @@ class FormazioniApp:
 
         action_row = tk.Frame(src_body, bg=self._style_colors["card_body_bg"])
         action_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        refresh_btn = ttk.Button(action_row, text=self.tr("btn_refresh"),
+        refresh_btn = self._button(action_row, "btn_refresh",
                                  style="Accent.TButton", command=self.refresh_templates)
         refresh_btn.pack(side=LEFT)
-        self._add_tooltip(refresh_btn, lambda: self.tr("tt_refresh"))
-        dept_btn = ttk.Button(action_row, text=self.tr("btn_depts"),
+        self._add_tooltip(refresh_btn, lambda: self.tr("tt_refresh") + "  (F5)")
+        dept_btn = self._button(action_row, "btn_depts",
                               style="Secondary.TButton", command=self.open_department_editor)
         dept_btn.pack(side=LEFT, padx=(10, 0))
         self._add_tooltip(dept_btn, lambda: self.tr("tt_depts"))
-        modules_btn = ttk.Button(action_row, text=self.tr("btn_modules"),
+        modules_btn = self._button(action_row, "btn_modules",
                                  style="Secondary.TButton", command=self.open_template_manager)
         modules_btn.pack(side=LEFT, padx=(10, 0))
         self._add_tooltip(modules_btn, lambda: self.tr("tt_modules"))
+        settings_btn = self._button(action_row, "btn_settings",
+                                  style="Secondary.TButton", command=self.open_settings)
+        settings_btn.pack(side=RIGHT)
+        self._add_tooltip(settings_btn, lambda: self.tr("tt_settings") + "  (Ctrl+,)")
+        history_btn = self._button(action_row, "btn_history",
+                                 style="Secondary.TButton", command=self.open_history)
+        history_btn.pack(side=RIGHT, padx=(0, 10))
+        self._add_tooltip(history_btn, lambda: self.tr("tt_history") + "  (Ctrl+H)")
 
     # ------------------------- Card 2 (Employee) --------------------------
     def _build_card2(self, body):
@@ -2270,7 +3073,7 @@ class FormazioniApp:
             subtitle=self.tr("card02_subtitle"),
         )
         self._card2_shadow = form_shadow
-        form_shadow.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
+        form_shadow.grid(row=1, column=0, sticky="nsew", padx=(0, 2))
         form_body.columnconfigure(1, weight=1)
 
         def add_row(r, label_text, widget_or_constructor):
@@ -2284,7 +3087,8 @@ class FormazioniApp:
 
         name_entry = add_row(0, self.tr("lbl_name"),
             lambda parent: ttk.Entry(parent, textvariable=self.employee_name))
-        self._add_tooltip(name_entry, lambda: self.tr("tt_name"))
+        self._add_tooltip(name_entry, lambda: self.tr("tt_name") + "  " + self.tr("sc_enter_hint"))
+        name_entry.bind("<Return>", lambda _e: self._inline_batch_add_current())
         try:
             _reg = getattr(self, "_register_local_wheel", None)
             if callable(_reg):
@@ -2318,8 +3122,8 @@ class FormazioniApp:
         bt = tk.Label(
             batch_box,
             text="   " + self.tr("bat_inline_title"),
-            bg=self._style_colors["accent_bg"], fg=self._style_colors["accent_label_fg"],
-            font=("Segoe UI Semibold", 9, "bold"), anchor="w",
+            bg=self._style_colors["count_bg"], fg=self._style_colors["count_fg"],
+            font=("Segoe UI Semibold", 10, "bold"), anchor="w", pady=7,
         )
         bt.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Label(batch_box, text=self.tr("bat_inline_subtitle"),
@@ -2356,22 +3160,32 @@ class FormazioniApp:
 
         actions = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
         actions.grid(row=3, column=0, columnspan=2, sticky="ew")
-        btn_add = ttk.Button(actions, text=self.tr("bat_add_person"),
+        # Due righe: modifica dell'elenco sopra, import/modello da file sotto
+        list_actions = tk.Frame(actions, bg=self._style_colors["card_body_bg"])
+        list_actions.pack(fill=X)
+        file_actions = tk.Frame(actions, bg=self._style_colors["card_body_bg"])
+        file_actions.pack(fill=X, pady=(6, 0))
+        btn_add = self._button(list_actions, "bat_add_person",
                              style="Secondary.TButton",
                              command=self._inline_batch_add_current)
         btn_add.pack(side=LEFT)
-        btn_del = ttk.Button(actions, text=self.tr("bat_del_person"),
+        btn_del = self._button(list_actions, "bat_del_person",
                              style="Secondary.TButton",
                              command=self._inline_batch_remove_selected)
         btn_del.pack(side=LEFT, padx=(6, 0))
-        btn_load = ttk.Button(actions, text=self.tr("bat_import_file"),
-                              style="Secondary.TButton",
-                              command=self._inline_batch_import_file)
-        btn_load.pack(side=LEFT, padx=(6, 0))
-        btn_clear = ttk.Button(actions, text=self.tr("bat_clear"),
+        btn_clear = self._button(list_actions, "bat_clear",
                                style="Secondary.TButton",
                                command=self._inline_batch_clear)
         btn_clear.pack(side=LEFT, padx=(6, 0))
+        btn_load = self._button(file_actions, "bat_import_file",
+                              style="Secondary.TButton",
+                              command=self._inline_batch_import_file)
+        btn_load.pack(side=LEFT)
+        btn_model = self._button(file_actions, "bat_template_download",
+                               style="Secondary.TButton",
+                               command=self.download_batch_template)
+        btn_model.pack(side=LEFT, padx=(6, 0))
+        self._add_tooltip(btn_model, lambda: self.tr("tt_batch_template"))
 
         batch_run_wrap = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
         batch_run_wrap.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -2380,11 +3194,12 @@ class FormazioniApp:
         run_count_lbl = ttk.Label(batch_run_wrap, textvariable=self._inline_batch_count(),
                                   style="Count.TLabel")
         run_count_lbl.pack(side=LEFT)
-        btn_run = ttk.Button(batch_run_wrap, text=self.tr("bat_run_all"),
-                             style="Primary.TButton",
+        btn_run = self._button(batch_run_wrap, "bat_run_all", style="Primary.TButton",
                              command=self._inline_batch_run)
         btn_run.pack(side=RIGHT, ipadx=14, ipady=5)
-        self._add_tooltip(btn_run, lambda: self.tr("tt_batch_run"))
+        self._inline_batch_run_btn = btn_run
+        self._refresh_inline_batch_count()
+        self._add_tooltip(btn_run, lambda: self.tr("tt_batch_run") + "  (Ctrl+B)")
         self._add_tooltip(btn_add, lambda: self.tr("tt_batch_add"))
         self._add_tooltip(btn_del, lambda: self.tr("tt_batch_del"))
         self._add_tooltip(btn_load, lambda: self.tr("tt_batch_import"))
@@ -2406,7 +3221,7 @@ class FormazioniApp:
         def _fmt(n):
             if n == 0:
                 return self.tr("bat_count_none")
-            return self.tr("bat_run_all", n=n)
+            return self.tr("bat_count", n=n)
 
         self._inline_batch_count_fmt = _fmt
         self._refresh_inline_batch_count()
@@ -2419,6 +3234,13 @@ class FormazioniApp:
             return
         n = len(getattr(self, "_inline_batch_rows", []))
         var.set(fmt(n))
+        run_btn = getattr(self, "_inline_batch_run_btn", None)
+        # Dopo un cambio di tema/lingua il riferimento puo' puntare al pulsante distrutto
+        if run_btn is not None and run_btn.winfo_exists():
+            text = self.tr("bat_run_all", n=n)
+            if run_btn.cget("image"):
+                text = " " + strip_leading_symbol(text)
+            run_btn.configure(text=text)
 
     def _current_dept_for_batch(self) -> str:
         depts = self._current_departments()
@@ -2475,14 +3297,16 @@ class FormazioniApp:
             tree.delete(c)
         self._refresh_inline_batch_count()
 
-    def _inline_batch_import_file(self):
-        p = filedialog.askopenfilename(
-            title=self.tr("bat_choose"),
-            initialdir=self.template_dir.get(),
-            filetypes=[("CSV / Excel", "*.csv *.xlsx"), ("All", "*.*")],
-        )
+    def _inline_batch_import_file(self, p: Path | None = None):
+        if p is None:
+            p = filedialog.askopenfilename(
+                title=self.tr("bat_choose"),
+                initialdir=self.template_dir.get(),
+                filetypes=[("CSV / Excel", "*.csv *.xlsx"), ("All", "*.*")],
+            )
         if not p:
             return
+        before = len(self._inline_batch_rows)
         try:
             loaded = self._parse_batch_file(Path(p))
         except Exception as exc:  # noqa: BLE001
@@ -2499,6 +3323,14 @@ class FormazioniApp:
             self._inline_batch_rows.append(row)
             tree.insert("", END, values=(nome, data, reparto))
         self._refresh_inline_batch_count()
+        self._toast(self.tr("dd_imported", n=len(self._inline_batch_rows) - before,
+                            name=Path(p).name), "success")
+
+    def _pdf_options(self) -> dict[str, Any]:
+        return {
+            "watermark": str(self.settings.get("pdf_watermark") or ""),
+            "protect": bool(self.settings.get("pdf_protect")),
+        }
 
     def _inline_batch_run(self):
         rows = list(getattr(self, "_inline_batch_rows", []))
@@ -2524,14 +3356,18 @@ class FormazioniApp:
         saved_snap = dict(self.saved_hashes) if self.saved_hashes else {}
         dept_opts = {d.upper() for d in department_options(tpl_snap)}
         out_dir_path = Path(self.output_dir.get()).expanduser()
+        pdf_options = self._pdf_options()
 
         def work2():
             ok = skip = fail = 0
             details: list[str] = []
-            total = max(1, len(rows))
+            # Prima si validano tutte le righe, poi si generano tutti i dossier insieme
+            # (una sola sessione Office, oppure in parallelo senza Office).
+            jobs: list[DossierJob] = []
+            job_rows: list[int] = []
+            reserved: set[Path] = set()
             try:
                 for idx, row in enumerate(rows, start=1):
-                    self._post("progress", {"step": idx, "total": total})
                     nome = (row.get("Nome") or "").strip()
                     data = (row.get("Data") or "").strip()
                     reparto_raw = (row.get("Reparto") or "").strip()
@@ -2571,20 +3407,30 @@ class FormazioniApp:
                         f"dossier_{safe_file_part(nome)}_{dept_tag}.pdf"
                     )
                     c = 2
-                    while out_file.exists():
+                    # I file del lotto non esistono ancora: si riservano i nomi gia' assegnati
+                    while out_file.exists() or out_file in reserved:
                         out_file = out_dir_path / (
                             f"dossier_{safe_file_part(nome)}_{dept_tag}_{c}.pdf"
                         )
                         c += 1
-                    try:
-                        build_pdf(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                  "+".join(reparto_list), ruolo, note, filt)
-                        self._save_history(out_file, nome, "+".join(reparto_list), len(filt))
+                    reserved.add(out_file)
+                    jobs.append(DossierJob(out_file, nome, parsed.strftime("%d/%m/%Y"),
+                                           "+".join(reparto_list), filt, ruolo, note))
+                    job_rows.append(idx)
+
+                def progress_cb(step: int, total: int):
+                    self._post("progress", {"step": step, "total": total})
+
+                results = build_pdfs(jobs, progress_cb, **pdf_options)
+                for idx, job, error in zip(job_rows, jobs, results):
+                    if error is None:
+                        self._save_history(job.output_path, job.employee_name, job.department,
+                                           len(job.templates), job.entry_date)
                         ok += 1
-                        details.append(f"#{idx} OK · {out_file.name}")
-                    except Exception as exc:  # noqa: BLE001
+                        details.append(f"#{idx} OK · {job.output_path.name}")
+                    else:
                         fail += 1
-                        details.append(s_tr("bat_fail_generic", i=idx, e=str(exc)))
+                        details.append(s_tr("bat_fail_generic", i=idx, e=str(error)))
                 hashes = dict(saved_snap)
                 for t in tpl_snap:
                     try:
@@ -2668,10 +3514,10 @@ class FormazioniApp:
         ttk.Label(badge_row, textvariable=self.count_label, style="Count.TLabel").pack(side=LEFT)
         right_badges = tk.Frame(badge_row, bg=self._style_colors["card_body_bg"])
         right_badges.pack(side=RIGHT)
-        btn_all = ttk.Button(right_badges, text=self.tr("btn_selectall"),
+        btn_all = self._button(right_badges, "btn_selectall",
                              style="Secondary.TButton",
                              command=lambda: self._set_all_inclusion(True))
-        btn_none = ttk.Button(right_badges, text=self.tr("btn_selectnone"),
+        btn_none = self._button(right_badges, "btn_selectnone",
                               style="Secondary.TButton",
                               command=lambda: self._set_all_inclusion(False))
         btn_all.pack(side=LEFT, padx=(0, 6))
@@ -2735,14 +3581,20 @@ class FormazioniApp:
 
         gen_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
         gen_frame.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        gen_btn = ttk.Button(gen_frame, text=self.tr("btn_generate"),
+        gen_buttons = tk.Frame(gen_frame, bg=self._style_colors["card_body_bg"])
+        gen_buttons.pack(fill=X)
+        gen_btn = self._button(gen_buttons, "btn_generate",
                              style="Primary.TButton", command=self.generate)
         gen_btn.pack(side=RIGHT, ipadx=18, ipady=5)
+        preview_btn = self._button(gen_buttons, "btn_preview",
+                                 style="Secondary.TButton", command=self.preview)
+        preview_btn.pack(side=RIGHT, padx=(0, 10), ipady=5)
+        self._add_tooltip(preview_btn, lambda: self.tr("tt_preview") + "  (Ctrl+P)")
         tk.Label(gen_frame, text=self.tr("lbl_generate_hint"),
                  bg=self._style_colors["card_body_bg"], fg=self._style_colors["text_muted"],
-                 font=("Segoe UI", 8), anchor="w",
-                 ).pack(side=LEFT, padx=(4, 0))
-        self._add_tooltip(gen_btn, lambda: self.tr("tt_generate"))
+                 font=("Segoe UI", 8), anchor="e",
+                 ).pack(side=RIGHT, pady=(4, 0))
+        self._add_tooltip(gen_btn, lambda: self.tr("tt_generate") + "  (Ctrl+G)")
 
         help_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
         help_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -2763,10 +3615,14 @@ class FormazioniApp:
     def _build_footer(self, body_container):
         footer_outer = tk.Frame(self.root, bg=self._style_colors["app_bg"])
         footer_outer.pack(fill=X, side="bottom")
-        footer_border = tk.Frame(footer_outer, bg=self._style_colors["sh2"], padx=1, pady=1)
-        footer_border.pack(fill=X, padx=30, pady=(0, 16))
-        footer = tk.Frame(footer_border, bg=self._style_colors["card_body_bg"], padx=24, pady=12)
-        footer.pack(fill=X)
+        colors = self._style_colors
+        footer_panel = RoundedPanel(footer_outer, self._kit, outer_bg=colors["app_bg"],
+                                    fill=colors["card_body_bg"], border=colors["sh2"],
+                                    shadow=colors["sh_shadow"],
+                                    shadow_alpha=150 if self.theme.get() == "dark" else 38,
+                                    radius=12, padx=16, pady=4)
+        footer_panel.pack(fill=X, padx=16, pady=(0, 8))
+        footer = footer_panel.inner
 
         status_wrap = tk.Frame(footer, bg=self._style_colors["card_body_bg"])
         status_wrap.pack(side=LEFT, fill=X, expand=True)
@@ -2787,6 +3643,138 @@ class FormazioniApp:
         self._footer = footer_outer
 
     # ---------------------- Tooltip helper --------------------------------
+    def _icon(self, name: str | None, style: str = "TButton"):
+        """PhotoImage dell'icona nel colore del testo dello stile ttk (None se assente)."""
+        if not name:
+            return None
+        try:
+            color = str(ttk.Style().lookup(style, "foreground") or self._style_colors["text"])
+            if not color.startswith("#"):
+                color = "#%02x%02x%02x" % tuple(c // 257 for c in self.root.winfo_rgb(color))
+            size = max(14, round(16 * self.root.winfo_fpixels("1i") / 96))
+            cache = self.__dict__.setdefault("_icon_cache", {})
+            key = (name, color.lower(), size)
+            if key not in cache:
+                png = draw_icon_png(name, color, size)
+                cache[key] = tk.PhotoImage(data=base64.b64encode(png)) if png else None
+            return cache[key]
+        except Exception:  # noqa: BLE001 - senza PIL si resta con il testo
+            return None
+
+    def _button(self, parent, key: str, **kwargs):
+        """ttk.Button con testo tradotto e icona a sinistra al posto dell'emoji."""
+        text = self.tr(key)
+        image = self._icon(BUTTON_ICONS.get(key), kwargs.get("style", "TButton"))
+        if image is not None:
+            kwargs.update(image=image, compound="left")
+            text = " " + strip_leading_symbol(text)
+        return ttk.Button(parent, text=text, **kwargs)
+
+    # ---------------------- Notifiche non bloccanti ----------------------
+    def _toast(self, message: str, kind: str = "info", action=None, duration: int = 6000):
+        """Avviso in basso nella finestra che sparisce da solo; action=(testo, funzione)."""
+        colors = self._style_colors
+        self._close_toast()
+        bg = colors["title_bg"]
+        accent = {"success": "#3fb27f", "warning": colors["gold"],
+                  "error": "#e5534b"}.get(kind, colors["primary_bg"])
+        frame = tk.Frame(self.root, bg=bg, padx=14, pady=10)
+        tk.Frame(frame, bg=accent, width=4).pack(side=LEFT, fill="y", padx=(0, 12))
+        tk.Label(frame, text=message, bg=bg, fg="#ffffff", font=("Segoe UI Semibold", 9),
+                 justify="left", anchor="w", wraplength=560).pack(side=LEFT)
+        if action is not None:
+            label, callback = action
+            link = tk.Label(frame, text=label, bg=bg, fg=colors["gold"], cursor="hand2",
+                            font=("Segoe UI Semibold", 9, "bold"), padx=14)
+            link.pack(side=LEFT)
+            link.bind("<Button-1>", lambda _e: (self._close_toast(), callback()))
+        close = tk.Label(frame, text="✕", bg=bg, fg="#bcd5dd", cursor="hand2",
+                         font=("Segoe UI", 9), padx=4)
+        close.pack(side=LEFT, padx=(6, 0))
+        close.bind("<Button-1>", lambda _e: self._close_toast())
+        frame.place(relx=0.5, rely=1.0, y=-96, anchor="s")
+        frame.lift()
+        self._toast_frame = frame
+        self._toast_after = self.root.after(duration, self._close_toast)
+
+    def _close_toast(self):
+        after_id = getattr(self, "_toast_after", None)
+        if after_id:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        frame = getattr(self, "_toast_frame", None)
+        if frame is not None:
+            try:
+                frame.destroy()
+            except tk.TclError:
+                pass
+        self._toast_frame = self._toast_after = None
+
+    # ---------------------- Scorciatoie da tastiera ----------------------
+    SHORTCUTS = (
+        ("Ctrl+G", "sc_generate"), ("Ctrl+P", "sc_preview"), ("Ctrl+B", "sc_batch"),
+        ("Ctrl+H", "sc_history"), ("Ctrl+,", "sc_settings"), ("F5", "sc_refresh"),
+        ("sc_key_enter", "sc_enter"), ("F1", "sc_help"),
+    )
+
+    def _bind_shortcuts(self):
+        def run(action):
+            # Le scorciatoie valgono solo nella finestra principale e mai a generazione in corso
+            if self.root.grab_current() is None:
+                action()
+            return "break"
+
+        for sequence, action in (
+            ("g", self.generate), ("p", self.preview), ("b", self._inline_batch_run),
+            ("h", self.open_history), ("comma", self.open_settings),
+        ):
+            # Le lettere anche maiuscole (Bloc Maiusc attivo); "comma" e' un keysym fisso
+            variants = {sequence, sequence.upper()} if len(sequence) == 1 else {sequence}
+            for variant in variants:
+                self.root.bind(f"<Control-{variant}>", lambda _e, a=action: run(a))
+        # Nei campi di testo Tk usa Ctrl+H come Backspace (stile Emacs): si disattiva,
+        # cosi' Ctrl+H apre lo storico senza cancellare l'ultima lettera.
+        for entry_class in ("TEntry", "Entry", "TCombobox"):
+            for variant in ("<Control-h>", "<Control-H>"):
+                self.root.bind_class(entry_class, variant, lambda _e: None)
+        self.root.bind("<F5>", lambda _e: run(self.refresh_templates))
+        self.root.bind("<F1>", lambda _e: run(self.show_shortcuts))
+
+    def show_shortcuts(self):
+        lines = [f"{self.tr(keys) if keys.startswith('sc_') else keys}   →   {self.tr(key)}"
+                 for keys, key in self.SHORTCUTS]
+        messagebox.showinfo(self.tr("sc_title"), "\n".join(lines))
+
+    # ---------------------- Trascinamento file ---------------------------
+    def _install_file_drop(self):
+        if os.name != "nt":
+            return
+        try:
+            self._drop_target = FileDropTarget(self.root, self._on_files_dropped)
+        except Exception:  # noqa: BLE001 - funzione accessoria
+            traceback.print_exc()
+
+    def _on_files_dropped(self, paths: list[Path], x: int, y: int) -> None:
+        """CSV, o Excel lasciato sull'elenco dipendenti -> import batch;
+        Word/Excel/PDF altrove -> nuovi moduli (template)."""
+        if self._worker_active:
+            return
+        widget = self.root.winfo_containing(x, y)
+        card2 = getattr(self, "_card2_shadow", None)
+        on_batch = widget is not None and card2 is not None and str(widget).startswith(str(card2))
+        batch_files = [f for f in paths if f.suffix.lower() == ".csv"
+                       or (on_batch and f.suffix.lower() == ".xlsx")]
+        modules = [f for f in paths if f not in batch_files
+                   and f.suffix.lower() in SUPPORTED_EXTENSIONS and f.is_file()]
+        for batch_file in batch_files:
+            self._inline_batch_import_file(batch_file)
+        if modules:
+            self.open_template_manager(initial_files=modules)
+        if not batch_files and not modules:
+            self._toast(self.tr("dd_unsupported"), "warning")
+
     def _add_tooltip(self, widget, getter):
         self._tooltips.append(Tooltip(widget, getter))
 
@@ -2892,7 +3880,7 @@ class FormazioniApp:
         if want == "narrow":
             if self._card2_shadow is not None:
                 self._card2_shadow.grid_configure(row=1, column=0, columnspan=2,
-                                                   sticky="nsew", padx=(0, 0), pady=(0, 18))
+                                                   sticky="nsew", padx=(0, 0), pady=(0, 2))
             if self._card3_shadow is not None:
                 self._card3_shadow.grid_configure(row=2, column=0, columnspan=2, sticky="nsew")
             layout.rowconfigure(1, weight=1)
@@ -2900,7 +3888,7 @@ class FormazioniApp:
         else:
             if self._card2_shadow is not None:
                 self._card2_shadow.grid_configure(row=1, column=0, columnspan=1,
-                                                   sticky="nsew", padx=(0, 18), pady=(0, 0))
+                                                   sticky="nsew", padx=(0, 2), pady=(0, 0))
             if self._card3_shadow is not None:
                 self._card3_shadow.grid_configure(row=1, column=1, columnspan=1, sticky="nsew")
             layout.rowconfigure(2, weight=0)
@@ -3074,25 +4062,66 @@ class FormazioniApp:
             self._row_path[item] = template.path
 
     # ---------------------- Generate single -------------------------------
-    def generate(self) -> None:
-        if self._worker_active:
-            return
+    def _collect_form(self, require_name: bool = True):
+        """Valida il modulo; ritorna (nome, data, reparti, template) oppure None."""
         name = self.employee_name.get().strip()
         entry_date = self.date_picker.get_string()
         departments = self._current_departments()
-        if not name:
+        if not name and require_name:
             messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_name"))
-            return
+            return None
         if not entry_date:
             messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_date"))
-            return
+            return None
         if not departments:
             messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_dept"))
-            return
+            return None
         selected = self._current_selected_templates()
         if not selected:
             messagebox.showwarning(self.tr("mb_no_docs_title"), self.tr("mb_no_docs_body"))
+            return None
+        return name, entry_date, departments, selected
+
+    def preview(self) -> None:
+        """Dossier di prova in una cartella temporanea: una copia per modulo e filigrana."""
+        if self._worker_active:
             return
+        form = self._collect_form(require_name=False)
+        if form is None:
+            return
+        name, entry_date, departments, selected = form
+        name = name or self.tr("pv_sample_name")
+        single_copies = [dc_replace(t, copies=1) for t in selected]
+        output_path = Path(tempfile.gettempdir()) / (
+            f"{PREVIEW_PREFIX}{os.getpid()}_{datetime.now():%H%M%S%f}.pdf")
+        watermark = self.tr("pv_watermark")
+        self._worker_active = True
+        self.status.set(self.tr("pv_status_running"))
+        self._post("progress_ready_label", None)
+
+        def progress_cb(step: int, total: int):
+            self._post("progress", {"step": step, "total": total})
+
+        def work():
+            try:
+                build_pdf(output_path, name, entry_date, "+".join(departments), "", "",
+                          single_copies, progress_cb=progress_cb, watermark=watermark)
+                self._post("done_preview", {"ok": True, "path": str(output_path)})
+            except Exception as error:  # noqa: BLE001
+                traceback.print_exc()
+                self._post("done_preview", {"ok": False, "error": str(error)})
+            finally:
+                self._post("worker_done", None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def generate(self) -> None:
+        if self._worker_active:
+            return
+        form = self._collect_form()
+        if form is None:
+            return
+        name, entry_date, departments, selected = form
         output_dir_path = Path(self.output_dir.get()).expanduser()
         dept_tag = safe_file_part("+".join(departments))
         base = output_dir_path / f"dossier_{safe_file_part(name)}_{dept_tag}.pdf"
@@ -3115,6 +4144,7 @@ class FormazioniApp:
         saved_snapshot = dict(self.saved_hashes) if self.saved_hashes else {}
         tr_done = self.tr("mb_status_done", name=output_path.name)
         tr_error = self.tr("mb_status_error")
+        pdf_options = self._pdf_options()
 
         def progress_cb(step: int, total: int):
             self._post("progress", {"step": step, "total": total})
@@ -3123,8 +4153,8 @@ class FormazioniApp:
             try:
                 total = build_pdf(output_path, name, entry_date, dept_str,
                                   ruolo, note, selected,
-                                  progress_cb=progress_cb)
-                self._save_history(output_path, name, dept_str, total)
+                                  progress_cb=progress_cb, **pdf_options)
+                self._save_history(output_path, name, dept_str, total, entry_date)
                 hashes = dict(saved_snapshot)
                 for t in selected:
                     try:
@@ -3161,26 +4191,44 @@ class FormazioniApp:
                         self._progressbar["value"] = 0
                 elif kind == "done_single":
                     if payload.get("ok"):
-                        messagebox.showinfo(
-                            self.tr("mb_done_title"),
-                            self.tr("mb_done_body", total=payload.get("total", 0),
-                                    path=payload.get("path", "")),
-                        )
+                        pdf = Path(str(payload.get("path", "")))
+                        message = self.tr("ts_done_single", name=pdf.name,
+                                          total=payload.get("total", 0))
+                        self._toast(message, "success", (self.tr("ts_open_pdf"),
+                                                         lambda: open_folder(pdf)), 9000)
+                        notify_windows(self.root, self.tr("mb_done_title"), message)
                         if payload.get("auto_open"):
                             open_folder(Path(str(payload["path"])).parent)
                         self.refresh_templates()
                     else:
                         messagebox.showerror(self.tr("mb_error_title"), str(payload.get("error", "")))
+                elif kind == "done_preview":
+                    if payload.get("ok"):
+                        self.status.set(self.tr("pv_status_done"))
+                        open_folder(Path(str(payload["path"])))
+                    else:
+                        self.status.set(self.tr("mb_status_error"))
+                        messagebox.showerror(self.tr("mb_error_title"), str(payload.get("error", "")))
+                elif kind == "update_result":
+                    self._handle_update_result(payload)
                 elif kind == "done_batch":
-                    summary = (
+                    counts = (
                         f"{payload.get('ok', 0)} " + self.tr("bat_summary_ok") +
                         "   ·   " + f"{payload.get('skip', 0)} " + self.tr("bat_summary_skip") +
-                        "   ·   " + f"{payload.get('fail', 0)} " + self.tr("bat_summary_fail") +
-                        "\n\n" + str(payload.get("detail", ""))
+                        "   ·   " + f"{payload.get('fail', 0)} " + self.tr("bat_summary_fail")
                     )
+                    summary = counts + "\n\n" + str(payload.get("detail", ""))
                     if payload.get("auto_open") and payload.get("out_dir"):
                         open_folder(Path(str(payload["out_dir"])))
-                    messagebox.showinfo(self.tr("bat_summary_title"), summary)
+                    problems = payload.get("skip", 0) or payload.get("fail", 0)
+                    self._toast(
+                        self.tr("bat_summary_title") + "  ·  " + counts,
+                        "warning" if problems else "success",
+                        (self.tr("ts_details"),
+                         lambda text=summary: messagebox.showinfo(self.tr("bat_summary_title"), text)),
+                        12000,
+                    )
+                    notify_windows(self.root, self.tr("bat_summary_title"), counts)
                     self.refresh_templates()
                 elif kind == "worker_done":
                     self._worker_active = False
@@ -3274,11 +4322,11 @@ class FormazioniApp:
                 return
             lb.delete(sel[0])
 
-        ttk.Button(btns, text=self.tr("de_add"), style="Secondary.TButton", command=add
+        self._button(btns, "de_add", style="Secondary.TButton", command=add
                    ).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(btns, text=self.tr("de_rename"), style="Secondary.TButton", command=rename
+        self._button(btns, "de_rename", style="Secondary.TButton", command=rename
                    ).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(btns, text=self.tr("de_delete"), style="Secondary.TButton", command=delete
+        self._button(btns, "de_delete", style="Secondary.TButton", command=delete
                    ).pack(side=LEFT)
 
         footer = tk.Frame(body, bg=self._style_colors["card_body_bg"])
@@ -3297,9 +4345,9 @@ class FormazioniApp:
             self.refresh_templates()
             win.destroy()
 
-        ttk.Button(footer, text=self.tr("de_save"), style="Primary.TButton",
+        self._button(footer, "de_save", style="Primary.TButton",
                    command=save_and_close).pack(side=RIGHT)
-        ttk.Button(footer, text=self.tr("de_cancel"), style="Secondary.TButton",
+        self._button(footer, "de_cancel", style="Secondary.TButton",
                    command=win.destroy).pack(side=RIGHT, padx=(0, 10))
 
     # ---------------------- Gestione moduli ------------------------------
@@ -3389,9 +4437,9 @@ class FormazioniApp:
 
         btns = tk.Frame(body, bg=colors["card_body_bg"])
         btns.grid(row=6, column=0, columnspan=2, sticky="e")
-        ttk.Button(btns, text=self.tr("de_cancel"), style="Secondary.TButton",
+        self._button(btns, "de_cancel", style="Secondary.TButton",
                    command=dlg.destroy).pack(side=LEFT, padx=(0, 10))
-        ttk.Button(btns, text=self.tr("tm_form_ok"), style="Primary.TButton",
+        self._button(btns, "tm_form_ok", style="Primary.TButton",
                    command=confirm).pack(side=LEFT)
         dlg.bind("<Return>", confirm)
         dlg.bind("<Escape>", lambda _e: dlg.destroy())
@@ -3404,7 +4452,7 @@ class FormazioniApp:
             pass
         return result or None
 
-    def open_template_manager(self):
+    def open_template_manager(self, initial_files: list[Path] | None = None):
         colors = self._style_colors
         win = tk.Toplevel(self.root)
         win.title(self.tr("tm_title"))
@@ -3487,6 +4535,9 @@ class FormazioniApp:
             sources = filedialog.askopenfilenames(
                 parent=win, title=self.tr("tm_add"),
                 filetypes=[(self.tr("tm_filetypes"), "*.docx *.doc *.xlsx *.xls *.pdf")])
+            add_paths(sources)
+
+        def add_paths(sources):
             if not sources:
                 return
             dest_dir = folder()
@@ -3589,17 +4640,24 @@ class FormazioniApp:
             ("tm_open", open_selected, "Secondary.TButton"),
             ("tm_delete", delete_selected, "Secondary.TButton"),
         ):
-            ttk.Button(toolbar, text=self.tr(text_key), style=style, command=cmd
+            self._button(toolbar, text_key, style=style, command=cmd
                        ).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(toolbar, text=self.tr("tm_close"), style="Primary.TButton",
+        self._button(toolbar, "tm_close", style="Primary.TButton",
                    command=win.destroy).pack(side=RIGHT)
-        ttk.Button(toolbar, text=self.tr("tm_open_folder"), style="Secondary.TButton",
+        self._button(toolbar, "tm_open_folder", style="Secondary.TButton",
                    command=lambda: open_folder(folder())).pack(side=RIGHT, padx=(0, 8))
 
         tree.bind("<Double-1>", edit_selected)
         tree.bind("<Return>", edit_selected)
         tree.bind("<Delete>", lambda _e: delete_selected())
         reload()
+        if os.name == "nt":
+            try:
+                win._drop_target = FileDropTarget(win, lambda paths, _x, _y: add_paths(paths))
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+        if initial_files:
+            win.after(150, lambda: add_paths(initial_files))
 
     def _parse_date_str(self, s: str):
         if not s:
@@ -3700,28 +4758,369 @@ class FormazioniApp:
         return out
 
     # ---------------------- History ---------------------------------------
-    def _save_history(self, output_path: Path, name: str, department: str, total: int) -> None:
-        history: list[dict[str, object]] = []
-        if HISTORY_FILE.exists():
-            try:
-                history = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                history = []
-        history.insert(0, {
-            "path": str(output_path),
-            "name": name,
-            "department": department,
-            "documents": total,
-            "ts": datetime.now().isoformat(timespec="seconds"),
-        })
-        if not isinstance(history, list):
-            history = []
+    @staticmethod
+    def _load_history() -> list[dict[str, Any]]:
+        if not HISTORY_FILE.exists():
+            return []
         try:
-            HISTORY_FILE.write_text(json.dumps(history[:50], ensure_ascii=False, indent=2),
-                                    encoding="utf-8")
+            history = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+
+    def _write_history(self, history: list[dict[str, Any]]) -> None:
+        try:
+            HISTORY_FILE.write_text(
+                json.dumps(history[:HISTORY_LIMIT], ensure_ascii=False, indent=2),
+                encoding="utf-8")
         except OSError:
             # La cronologia e' accessoria: un errore qui non deve far fallire il dossier
             traceback.print_exc()
+
+    def _save_history(self, output_path: Path, name: str, department: str, total: int,
+                      entry_date: str = "") -> None:
+        with self._history_lock:
+            history = self._load_history()
+            history.insert(0, {
+                "path": str(output_path),
+                "name": name,
+                "entry_date": entry_date,
+                "department": department,
+                "documents": total,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
+            self._write_history(history)
+
+    def open_history(self):
+        colors = self._style_colors
+        win = tk.Toplevel(self.root)
+        win.title(self.tr("hi_title"))
+        win.transient(self.root)
+        win.geometry("980x560")
+        win.minsize(720, 400)
+        win.configure(bg=colors["app_bg"])
+        try:
+            _set_app_icon(win)
+        except Exception:
+            pass
+        body = tk.Frame(win, bg=colors["card_body_bg"], padx=18, pady=18)
+        body.pack(fill=BOTH, expand=True, padx=14, pady=14)
+
+        top = tk.Frame(body, bg=colors["card_body_bg"])
+        top.pack(fill=X, pady=(0, 12))
+        tk.Label(top, text=self.tr("hi_search"), bg=colors["card_body_bg"], fg=colors["text"],
+                 font=("Segoe UI Semibold", 9, "bold")).pack(side=LEFT, padx=(0, 10))
+        query = StringVar()
+        search = ttk.Entry(top, textvariable=query)
+        search.pack(side=LEFT, fill=X, expand=True)
+        count_var = StringVar()
+        ttk.Label(top, textvariable=count_var, style="Count.TLabel").pack(side=RIGHT, padx=(12, 0))
+
+        toolbar = tk.Frame(body, bg=colors["card_body_bg"])
+        toolbar.pack(fill=X, side="bottom")
+
+        list_wrap = tk.Frame(body, bg=colors["card_body_bg"])
+        list_wrap.pack(fill=BOTH, expand=True, pady=(0, 12))
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+        columns = ("ts", "name", "entry", "dept", "docs", "file")
+        tree = ttk.Treeview(list_wrap, columns=columns, show="headings", selectmode="browse")
+        widths = {"ts": 130, "name": 200, "entry": 100, "dept": 170, "docs": 60, "file": 280}
+        for col in columns:
+            tree.heading(col, text=self.tr(f"hi_col_{col}"))
+            tree.column(col, width=widths[col], anchor="center" if col == "docs" else "w",
+                        stretch=col in ("name", "file"))
+        tree.tag_configure("missing", foreground=colors["text_muted"])
+        tree.tag_configure("even", background=colors["row_even"])
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(list_wrap, orient="vertical", command=tree.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=sb.set)
+        rows: dict[str, dict[str, Any]] = {}
+
+        def fmt_ts(value: str) -> str:
+            try:
+                return datetime.fromisoformat(value).strftime("%d/%m/%Y %H:%M")
+            except (TypeError, ValueError):
+                return str(value or "")
+
+        def reload(*_):
+            tree.delete(*tree.get_children())
+            rows.clear()
+            needle = query.get().strip().lower()
+            history = self._load_history()
+            shown = 0
+            for entry in history:
+                haystack = " ".join(str(entry.get(k, "")) for k in
+                                    ("name", "department", "entry_date", "path")).lower()
+                if needle and needle not in haystack:
+                    continue
+                path = Path(str(entry.get("path", "")))
+                exists = path.exists()
+                tags = [] if exists else ["missing"]
+                if shown % 2:
+                    tags.append("even")
+                iid = tree.insert("", END, tags=tuple(tags), values=(
+                    fmt_ts(entry.get("ts", "")), entry.get("name", ""),
+                    entry.get("entry_date", "") or "—", entry.get("department", ""),
+                    entry.get("documents", ""),
+                    path.name if exists else f"⚠ {path.name} · {self.tr('hi_missing')}",
+                ))
+                rows[iid] = entry
+                shown += 1
+            count_var.set(self.tr("hi_count", shown=shown, total=len(history)))
+
+        def current() -> dict[str, Any] | None:
+            sel = tree.selection()
+            if not sel or sel[0] not in rows:
+                messagebox.showwarning(self.tr("de_err_none_title"),
+                                       self.tr("hi_select"), parent=win)
+                return None
+            return rows[sel[0]]
+
+        def open_pdf(_evt=None):
+            entry = current()
+            if entry is None:
+                return
+            path = Path(str(entry.get("path", "")))
+            if not path.exists():
+                messagebox.showwarning(self.tr("hi_title"), self.tr("hi_missing_body"), parent=win)
+                return
+            open_folder(path)
+
+        def open_dir():
+            entry = current()
+            if entry is None:
+                return
+            folder = Path(str(entry.get("path", ""))).parent
+            open_folder(folder if folder.exists() else Path(self.output_dir.get()))
+
+        def reuse():
+            entry = current()
+            if entry is None:
+                return
+            self._apply_history_entry(entry)
+            win.destroy()
+
+        def remove():
+            entry = current()
+            if entry is None:
+                return
+            with self._history_lock:
+                history = [h for h in self._load_history() if h != entry]
+                self._write_history(history)
+            reload()
+
+        for text_key, cmd, style in (
+            ("hi_open_pdf", open_pdf, "Accent.TButton"),
+            ("hi_open_dir", open_dir, "Secondary.TButton"),
+            ("hi_reuse", reuse, "Secondary.TButton"),
+            ("hi_remove", remove, "Secondary.TButton"),
+        ):
+            self._button(toolbar, text_key, style=style, command=cmd
+                       ).pack(side=LEFT, padx=(0, 8))
+        self._button(toolbar, "tm_close", style="Primary.TButton",
+                   command=win.destroy).pack(side=RIGHT)
+
+        query.trace_add("write", reload)
+        tree.bind("<Double-1>", open_pdf)
+        tree.bind("<Return>", open_pdf)
+        tree.bind("<Delete>", lambda _e: remove())
+        win.bind("<Escape>", lambda _e: win.destroy())
+        reload()
+        search.focus_set()
+
+    def _apply_history_entry(self, entry: dict[str, Any]) -> None:
+        """Ricompila il modulo con i dati di un dossier dello storico."""
+        self.employee_name.set(str(entry.get("name", "")))
+        parsed = self._parse_date_str(str(entry.get("entry_date", "")))
+        if parsed is not None:
+            self.date_picker.set_date(parsed)
+        options = department_options(self.templates)
+        wanted = [d.strip().upper() for d in str(entry.get("department", "")).split("+")
+                  if d.strip()]
+        known = [d for d in wanted if d in options]
+        if len(known) > 1:
+            self.multi_dept_mode.set(True)
+            self._toggle_multi_dept()
+            for dept in known:
+                if dept in self.multi_dept_values:
+                    self.multi_dept_values[dept].set(True)
+        elif known:
+            if self.multi_dept_mode.get():
+                self.multi_dept_mode.set(False)
+                self._toggle_multi_dept()
+            self.department.set(known[0])
+        self.update_document_list()
+        if len(known) != len(wanted):
+            missing = ", ".join(d for d in wanted if d not in known)
+            messagebox.showwarning(self.tr("hi_title"), self.tr("hi_dept_missing", d=missing))
+        self.status.set(self.tr("hi_reused", name=entry.get("name", "")))
+        self._toast(self.tr("hi_reused", name=entry.get("name", "")))
+
+    # ---------------------- Modello Excel batch ---------------------------
+    def download_batch_template(self):
+        target = filedialog.asksaveasfilename(
+            title=self.tr("bat_template_download"),
+            initialdir=self.output_dir.get(),
+            initialfile=self.tr("bat_template_filename"),
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+        )
+        if not target:
+            return
+        departments = [d for d in department_options(self.templates)
+                       if d.upper() not in ALL_DEPARTMENT_NAMES]
+        try:
+            write_batch_template(Path(target), departments,
+                                 italian=self.language_code == "it")
+        except OSError as exc:
+            messagebox.showerror(self.tr("mb_error_title"), str(exc))
+            return
+        self.status.set(self.tr("bat_template_saved", name=Path(target).name))
+        self._toast(self.tr("bat_template_saved", name=Path(target).name), "success",
+                    (self.tr("ts_open"), lambda: open_folder(Path(target))))
+
+    # ---------------------- Impostazioni ----------------------------------
+    def open_settings(self):
+        colors = self._style_colors
+        win = tk.Toplevel(self.root)
+        win.title(self.tr("st_title"))
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(False, False)
+        win.configure(bg=colors["app_bg"])
+        try:
+            _set_app_icon(win)
+        except Exception:
+            pass
+        body = tk.Frame(win, bg=colors["card_body_bg"], padx=22, pady=20)
+        body.pack(fill=BOTH, expand=True, padx=14, pady=14)
+        body.columnconfigure(0, weight=1)
+
+        def section(text, row):
+            tk.Label(body, text=text, bg=colors["card_body_bg"], fg=colors["accent_label_fg"],
+                     font=("Segoe UI", 9, "bold"), anchor="w"
+                     ).grid(row=row, column=0, sticky="w", pady=(0, 8))
+
+        def hint(text, row):
+            tk.Label(body, text=text, bg=colors["card_body_bg"], fg=colors["text_muted"],
+                     font=("Segoe UI", 8), anchor="w", justify="left", wraplength=460
+                     ).grid(row=row, column=0, sticky="w", pady=(0, 14))
+
+        watermark_var = StringVar(value=str(self.settings.get("pdf_watermark") or ""))
+        protect_var = BooleanVar(value=bool(self.settings.get("pdf_protect")))
+        updates_var = BooleanVar(value=bool(self.settings.get("check_updates")))
+        source_var = StringVar(value=str(self.settings.get("update_source") or ""))
+
+        section(self.tr("st_pdf_section"), 0)
+        tk.Label(body, text=self.tr("st_watermark"), bg=colors["card_body_bg"], fg=colors["text"],
+                 font=("Segoe UI Semibold", 9, "bold"), anchor="w"
+                 ).grid(row=1, column=0, sticky="w", pady=(0, 4))
+        wm_entry = ttk.Entry(body, textvariable=watermark_var, width=52)
+        wm_entry.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        hint(self.tr("st_watermark_hint"), 3)
+        ttk.Checkbutton(body, text=self.tr("st_protect"), variable=protect_var
+                        ).grid(row=4, column=0, sticky="w", pady=(0, 4))
+        hint(self.tr("st_protect_hint"), 5)
+
+        section(self.tr("st_update_section"), 6)
+        ttk.Checkbutton(body, text=self.tr("st_check_updates"), variable=updates_var
+                        ).grid(row=7, column=0, sticky="w", pady=(0, 8))
+        tk.Label(body, text=self.tr("st_update_source"), bg=colors["card_body_bg"],
+                 fg=colors["text"], font=("Segoe UI Semibold", 9, "bold"), anchor="w"
+                 ).grid(row=8, column=0, sticky="w", pady=(0, 4))
+        ttk.Entry(body, textvariable=source_var, width=52
+                  ).grid(row=9, column=0, sticky="ew", pady=(0, 4))
+        hint(self.tr("st_update_hint", version=APP_VERSION), 10)
+
+        def store():
+            self.settings["pdf_watermark"] = watermark_var.get().strip()
+            self.settings["pdf_protect"] = bool(protect_var.get())
+            self.settings["check_updates"] = bool(updates_var.get())
+            self.settings["update_source"] = source_var.get().strip()
+            self._persist_settings()
+
+        def check_now():
+            store()
+            self.check_for_updates(manual=True)
+
+        def save_and_close(_evt=None):
+            store()
+            win.destroy()
+
+        btns = tk.Frame(body, bg=colors["card_body_bg"])
+        btns.grid(row=11, column=0, sticky="ew", pady=(6, 0))
+        self._button(btns, "st_check_now", style="Secondary.TButton",
+                   command=check_now).pack(side=LEFT)
+        self._button(btns, "de_save", style="Primary.TButton",
+                   command=save_and_close).pack(side=RIGHT)
+        self._button(btns, "de_cancel", style="Secondary.TButton",
+                   command=win.destroy).pack(side=RIGHT, padx=(0, 10))
+        win.bind("<Escape>", lambda _e: win.destroy())
+        wm_entry.focus_set()
+
+    # ---------------------- Aggiornamenti ---------------------------------
+    def check_for_updates(self, manual: bool = False) -> None:
+        source = str(self.settings.get("update_source") or "").strip()
+        if not source:
+            if manual:
+                messagebox.showinfo(self.tr("up_title"), self.tr("up_no_source"))
+            return
+        if self._update_check_running:
+            return
+        self._update_check_running = True
+
+        def work():
+            try:
+                manifest = fetch_update_manifest(source)
+                self._post("update_result", {"manual": manual, "manifest": manifest})
+            except Exception as error:  # noqa: BLE001 - rete/percorso non raggiungibile
+                self._post("update_result", {"manual": manual, "error": str(error)})
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _handle_update_result(self, payload: dict[str, Any]) -> None:
+        self._update_check_running = False
+        manual = bool(payload.get("manual"))
+        if payload.get("error"):
+            # Controllo automatico: offline o sorgente irraggiungibile non deve disturbare
+            if manual:
+                messagebox.showerror(self.tr("up_title"),
+                                     self.tr("up_error", e=payload["error"]))
+            return
+        self.settings["last_update_check"] = date.today().isoformat()
+        self._persist_settings()
+        manifest = payload.get("manifest") or {}
+        remote = manifest.get("version", "")
+        if not remote or parse_version(remote) <= parse_version(APP_VERSION):
+            if manual:
+                messagebox.showinfo(self.tr("up_title"),
+                                    self.tr("up_latest", version=APP_VERSION))
+            return
+        notes = manifest.get("notes", "")
+        body = self.tr("up_available", new=remote, current=APP_VERSION)
+        if notes:
+            body += "\n\n" + notes
+        url = manifest.get("url", "")
+
+        def open_update():
+            if url.lower().startswith(("http://", "https://")):
+                webbrowser.open(url)
+            else:
+                # Percorso di rete: si apre la cartella, l'utente avvia il setup
+                setup = Path(url)
+                open_folder(setup.parent if setup.suffix else setup)
+
+        if manual:
+            # Dalla finestra Impostazioni (modale) serve una risposta esplicita
+            if not url:
+                messagebox.showinfo(self.tr("up_title"), body)
+            elif messagebox.askyesno(self.tr("up_title"), body + "\n\n" + self.tr("up_open")):
+                open_update()
+            return
+        # Controllo automatico all'avvio: avviso discreto che non interrompe il lavoro
+        self._toast(body, "info", (self.tr("up_get"), open_update) if url else None, 15000)
 
 
 # --------------------------- MAIN -----------------------------------------
@@ -3751,4 +5150,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Nell'exe i processi del batch parallelo rilanciano l'eseguibile stesso:
+    # freeze_support li intercetta prima che aprano un'altra finestra.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()

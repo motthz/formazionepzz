@@ -27,6 +27,9 @@ jobs:
       - name: Build executable
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ.spec
 
+      - name: Build folder version (used by the installer, faster startup)
+        run: python -m PyInstaller --clean --noconfirm FormazioniPZZ_dir.spec
+
       - name: Build installer
         run: python -m PyInstaller --clean --noconfirm installer/installer.spec
 

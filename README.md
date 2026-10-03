@@ -62,3 +62,39 @@ TUTTI_2_AAA.xlsx
 ## Nota sui formati
 
 I formati `.doc`, `.docx`, `.xls` e `.xlsx` sono supportati. Per conservare nel PDF il layout originale, installa LibreOffice e rendi `libreoffice` o `soffice` disponibile nel PATH. L'app modifica solo `*nome*` e `*data*`, converte ogni modulo con il motore Office e accoda le pagine originali senza ridisegnarle.
+
+## Storico, anteprima e opzioni PDF
+
+- **Storico**: elenca i dossier generati (fino a 500), con ricerca, apertura del PDF o della cartella e *Usa questi dati* per ricompilare il modulo.
+- **Anteprima**: crea un dossier di prova in una cartella temporanea, con una sola copia per modulo e la filigrana ANTEPRIMA.
+- **Modello Excel**: nell'elenco batch, scarica un `.xlsx` con le colonne Nome, Data e Reparto già pronte per l'import.
+- **Impostazioni → Dossier PDF**: filigrana facoltativa su ogni pagina (es. `COPIA CONTROLLATA`) e blocco della modifica del PDF, che resta apribile e stampabile senza password.
+
+## Uso rapido
+
+- **Trascina i file sulla finestra**: un CSV, oppure un Excel lasciato sull'elenco dipendenti, viene importato nel batch. Word, Excel e PDF lasciati altrove si aggiungono come nuovi moduli.
+- **Scorciatoie** (F1 per l'elenco completo): Ctrl+G genera, Ctrl+P anteprima, Ctrl+B genera tutto l'elenco, Ctrl+H storico, Ctrl+, impostazioni, F5 aggiorna i documenti, Invio nel campo nome aggiunge la persona all'elenco.
+- **Tema "Sistema"**: segue la modalità chiara/scura di Windows, anche se cambia mentre l'app è aperta.
+- A fine generazione compare un avviso in basso nella finestra, con "Apri PDF" o "Dettagli". Se si sta usando un'altra finestra arriva anche la notifica di Windows.
+
+## Prestazioni
+
+- Il batch converte i moduli di tutte le persone in **un'unica sessione** di Word/Excel: con 5 dossier circa la metà del tempo rispetto a generarli uno alla volta.
+- I moduli **senza** `*nome*` e `*data*` (regolamenti, procedure) si convertono una sola volta: il PDF resta in cache in `%LOCALAPPDATA%\FormazioniPZZ\pdf-cache` e viene riusato finché il file non cambia.
+- Senza Office installato il batch genera più dossier **in parallelo**, su più processori.
+- L'installer installa la versione "cartella" dell'app, che si apre più in fretta dell'exe singolo. Le librerie di Word, Excel e PDF si caricano solo alla prima generazione.
+
+## Aggiornamenti
+
+Il controllo degli aggiornamenti è disattivato finché non si imposta un'origine in **Impostazioni → Origine aggiornamenti**:
+
+- una cartella di rete (es. `\server\FormazioniPZZ`) che contiene `version.json` e `FormazioniPZZ_Setup.exe`;
+- oppure l'indirizzo web di un `version.json`.
+
+Formato di `version.json` (un esempio è in `release/version.json`):
+
+```json
+{ "version": "2.1.0", "url": "facoltativo: link al setup", "notes": "novità della versione" }
+```
+
+Il controllo avviene in background all'avvio, al massimo una volta al giorno. Se la rete non è raggiungibile, l'app non mostra nessun messaggio. A ogni rilascio aggiorna sia `APP_VERSION` in `app.py` sia `release/version.json`: `test_nuove_funzioni.py` verifica che le due versioni coincidano.

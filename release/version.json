@@ -1,0 +1,4 @@
+{
+  "version": "2.1.0",
+  "notes": "Storico dossier, anteprima, modello Excel per il batch, filigrana e protezione PDF, controllo aggiornamenti. Batch più veloce (una sola sessione Office, cache dei moduli fissi, parallelo senza Office), avvio più rapido, tema Sistema, nuove icone, avvisi non bloccanti, scorciatoie da tastiera, trascinamento dei file."
+}
