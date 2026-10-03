@@ -1,0 +1,15 @@
+name: Proponi un'idea
+description: Una funzione nuova o un miglioramento
+labels: [miglioramento]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: Quale problema risolverebbe?
+      description: Per esempio "ogni mese devo ... e perdo tempo perché ...".
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Come te lo immagini?

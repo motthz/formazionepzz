@@ -240,5 +240,10 @@
   "ts_details": "Detalles",
   "ts_open": "Abrir",
   "up_get": "Descargar",
-  "bat_count": "  {n} personas en la lista"
+  "bat_count": "  {n} personas en la lista",
+  "log_hint": "Detalles técnicos en el registro de errores:\n{path}",
+  "st_open_log": "Abrir registro de errores",
+  "up_install": "Actualizar ahora",
+  "up_downloading": "Descargando la versión {version}… Formazioni PZZ se cerrará y se abrirá actualizado.",
+  "up_failed": "La actualización automática no se ha completado: {e}"
 }

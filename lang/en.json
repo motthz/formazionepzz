@@ -240,5 +240,10 @@
   "ts_details": "Details",
   "ts_open": "Open",
   "up_get": "Download",
-  "bat_count": "  {n} people in the list"
+  "bat_count": "  {n} people in the list",
+  "log_hint": "Technical details in the error log:\n{path}",
+  "st_open_log": "Open error log",
+  "up_install": "Update now",
+  "up_downloading": "Downloading version {version}… Formazioni PZZ will close and reopen updated.",
+  "up_failed": "Automatic update failed: {e}"
 }

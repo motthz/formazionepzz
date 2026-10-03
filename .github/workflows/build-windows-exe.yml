@@ -1,43 +1,83 @@
-name: Build Windows executable
+name: Test e build Windows
 
-# Ad ogni push su main: compila e verifica, gli exe restano scaricabili come artifact.
-# Su un tag vX.Y.Z: allega anche gli exe alla Release GitHub di quel tag
-# (la crea se non esiste). Gli exe non vengono piu' salvati nel repository.
+# Pull request e push su main: controllo del codice, test, build e prova dell'exe.
+# Tag vX.Y.Z: in piu' allega gli exe alla Release GitHub di quel tag (la crea se manca).
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  test:
+    name: Controlli e test
     runs-on: windows-latest
-
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
-      - name: Install dependencies
+      - name: Installa le dipendenze
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Controllo del codice (ruff)
+        run: python -m ruff check .
+
+      - name: Test (pytest)
+        run: python -m pytest -v
+
+  build:
+    name: Build e prova degli exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Installa le dipendenze
         run: python -m pip install -r requirements.txt
 
-      - name: Build portable executable
+      - name: Build exe portatile
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ.spec
 
-      - name: Build folder version (used by the installer, faster startup)
+      - name: Build versione cartella (usata dall'installer)
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ_dir.spec
 
       - name: Build installer
         run: python -m PyInstaller --clean --noconfirm installer/installer.spec
 
-      - name: Upload executables artifact
+      - name: Prova degli exe (avvio e installazione)
+        shell: pwsh
+        run: |
+          # L'app deve restare aperta: se si chiude subito c'e' un errore all'avvio
+          $app = Start-Process "dist/FormazioniPZZ_app/FormazioniPZZ.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) { throw "FormazioniPZZ.exe si e' chiuso all'avvio (codice $($app.ExitCode))" }
+          Stop-Process -Id $app.Id -Force
+
+          # Installazione silenziosa in una cartella di prova
+          $dir = Join-Path $env:RUNNER_TEMP "install-test"
+          $setup = Start-Process "dist/FormazioniPZZ_Setup.exe" -ArgumentList "--silent","--dir",$dir,"--no-shortcuts","--no-register" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installazione non riuscita (codice $($setup.ExitCode))" }
+          foreach ($f in "FormazioniPZZ.exe", "_internal\lang\it.json", "templates", "reparti.txt") {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "Manca $f nell'installazione" }
+          }
+          Write-Host "Exe e installer verificati"
+
+      - name: Carica gli exe come artifact
         uses: actions/upload-artifact@v4
         with:
           name: FormazioniPZZ-windows
@@ -45,7 +85,7 @@ jobs:
             dist/FormazioniPZZ.exe
             dist/FormazioniPZZ_Setup.exe
 
-      - name: Attach executables to the release
+      - name: Allega gli exe alla release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
@@ -54,6 +94,6 @@ jobs:
           $tag = "${{ github.ref_name }}"
           gh release view $tag 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "Formazioni PZZ $($tag.TrimStart('v'))" --generate-notes
+            gh release create $tag --title "Formazioni PZZ $($tag.TrimStart('v'))" --notes-from-tag
           }
           gh release upload $tag dist/FormazioniPZZ_Setup.exe dist/FormazioniPZZ.exe --clobber

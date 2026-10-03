@@ -26,17 +26,17 @@ Test ATOMICI (100% coverage funzioni):
 from __future__ import annotations
 
 import json
-import os
 import sys
 import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
+
 from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import app
+from app_shim import app  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -138,8 +138,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
                        ["Documento generale per *nome*"])
     create_sample_docx(TEMPLATES_DIR / "PRODUZIONE_3_PRO.docx",
                        ["Istruzioni produzione per *nome* del *data*"])
-    from reportlab.pdfgen.canvas import Canvas
     from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfgen.canvas import Canvas
     horizontal_pdf = TEMPLATES_DIR / "ORIZZONTALE_1_ORI.pdf"
     horizontal_canvas = Canvas(str(horizontal_pdf), pagesize=landscape(A4))
     for page_number in range(2):

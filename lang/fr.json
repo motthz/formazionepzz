@@ -240,5 +240,10 @@
   "ts_details": "Détails",
   "ts_open": "Ouvrir",
   "up_get": "Télécharger",
-  "bat_count": "  {n} personnes dans la liste"
+  "bat_count": "  {n} personnes dans la liste",
+  "log_hint": "Détails techniques dans le journal des erreurs :\n{path}",
+  "st_open_log": "Ouvrir le journal des erreurs",
+  "up_install": "Mettre à jour",
+  "up_downloading": "Téléchargement de la version {version}… Formazioni PZZ va se fermer et se rouvrir à jour.",
+  "up_failed": "La mise à jour automatique a échoué : {e}"
 }

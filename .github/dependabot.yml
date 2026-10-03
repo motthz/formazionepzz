@@ -1,0 +1,20 @@
+# Dependabot propone ogni mese una pull request per le librerie e le azioni GitHub
+# aggiornate: i test del workflow verificano che tutto funzioni prima dell'unione.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      librerie-python:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      azioni-github:
+        patterns: ["*"]

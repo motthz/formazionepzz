@@ -1,8 +1,9 @@
 """Crea 9 template di esempio (1 docx per reparto + 1 TUTTI + 1 xlsx)."""
 
+from pathlib import Path
+
 from docx import Document
 from openpyxl import Workbook
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TEMPL_DIR = ROOT / "templates"
