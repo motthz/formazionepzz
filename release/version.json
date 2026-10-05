@@ -1,4 +1,4 @@
 {
-  "version": "2.3.1",
-  "notes": "Le immagini e i loghi delle intestazioni dei modelli Word/Excel restano intatti; interfaccia molto più fluida durante scorrimento, ridimensionamento e schermo intero."
+  "version": "2.4.0",
+  "notes": "Finestra più compatta: nome, data e reparto visibili subito. Avvio più rapido, niente più pulsanti tagliati nelle finestre strette, messaggi di stato tradotti."
 }
