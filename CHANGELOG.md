@@ -2,6 +2,18 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## 2.4.0
+
+**Per chi usa l'app**
+- **Finestra più compatta**: intestazione più bassa e card più strette. Nome, data e reparto sono visibili appena si apre il programma, senza scorrere.
+- La finestra si adatta allo schermo e alla scala di Windows e si apre centrata.
+- Le card "Anagrafica" e "Riepilogo" si affiancano solo quando c'è spazio: niente più pulsanti tagliati nelle finestre strette. I testi lunghi vanno a capo sulla larghezza disponibile.
+- L'elenco batch vuoto spiega come aggiungere le persone.
+- **Avvio più rapido**: la finestra si apre in circa un terzo di tempo in meno. Il lucchetto nel piè di pagina è un'icona disegnata invece di un'emoji, che costava quasi mezzo secondo all'avvio.
+
+**Correzioni**
+- I messaggi di stato dei template ("11 template pronti" e simili) erano sempre in italiano: ora sono tradotti in tutte le lingue.
+
 ## 2.3.1
 
 **Correzioni**

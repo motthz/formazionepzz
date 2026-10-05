@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -62,7 +63,11 @@ def main() -> None:
     ui_app._enable_dpi_awareness()
     root = ui_app.tk.Tk()
     app = ui_app.FormazioniApp(root)
-    root.geometry("1280x900+0+0")
+    # 1280x900 a scala 100%: a 125-150% la finestra cresce, cosi' le card restano affiancate
+    scale = app._kit.scale if getattr(app, "_kit", None) else 1.0
+    width = min(round(1280 * scale), root.winfo_screenwidth())
+    height = min(round(900 * scale), root.winfo_screenheight() - 90)  # resta sopra la barra
+    root.geometry(f"{width}x{height}+0+0")
     root.attributes("-topmost", True)
 
     def neutral_paths():
@@ -70,6 +75,10 @@ def main() -> None:
         app.output_dir.set(SHOWN_OUTPUT)
 
     def grab(widget, name):
+        # Il layout e' veloce, ma i dialoghi si posizionano dopo l'apertura:
+        # si aspetta che la finestra stia ferma prima di catturarla.
+        widget.update()
+        time.sleep(0.4)
         widget.update()
         x, y = widget.winfo_rootx(), widget.winfo_rooty()
         image = ImageGrab.grab(bbox=(x, y, x + widget.winfo_width(), y + widget.winfo_height()),

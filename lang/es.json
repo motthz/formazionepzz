@@ -1,6 +1,11 @@
 {
   "app_title": "Formazioni PZZ — Expediente de formación",
   "status_initial": "Elige una carpeta de plantillas para empezar.",
+  "status_no_folder": "La carpeta de plantillas aún no existe.",
+  "status_no_templates": "No hay plantillas válidas. Usa DEPARTAMENTO_NÚMERO_CÓDIGO.",
+  "status_templates_ignored": "{n} plantillas listas; {ignored} ignoradas (nombre no válido).",
+  "status_templates_ready": "{n} plantillas listas.",
+  "bat_empty_hint": "Todavía no hay nadie en la lista.\nEscribe nombre y fecha arriba y pulsa Intro, o importa un archivo CSV/Excel.",
   "count_none": "Ningún documento detectado",
   "count_label": "  {total} DOCUMENTOS  ·  {templates} PLANTILLAS  ",
   "eyebrow": "FORMACIÓN  ·  PZZ",
