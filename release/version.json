@@ -1,4 +1,4 @@
 {
-  "version": "2.3.0",
-  "notes": "Aggiornamenti automatici dalle release di GitHub. Gli eseguibili si scaricano dalla pagina Release del repository."
+  "version": "2.3.1",
+  "notes": "Le immagini e i loghi delle intestazioni dei modelli Word/Excel restano intatti; interfaccia molto più fluida durante scorrimento, ridimensionamento e schermo intero."
 }
