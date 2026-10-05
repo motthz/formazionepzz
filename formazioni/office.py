@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .documents import Document, load_workbook, replace_docx_placeholders, replace_xlsx_placeholders
+from .documents import fill_office_placeholders
 
 
 @functools.lru_cache(maxsize=1)
@@ -215,17 +215,9 @@ def _prepare_office_template(
         source = work_dir / template.name
         shutil.copy2(template, source)
 
-    if source.suffix.lower() == ".docx":
-        document = Document(str(source))
-        replace_docx_placeholders(document, employee_name, entry_date)
-        document.save(str(source))
-    elif source.suffix.lower() == ".xlsx":
-        workbook = load_workbook(source, data_only=False, read_only=False)
-        try:
-            replace_xlsx_placeholders(workbook, employee_name, entry_date)
-            workbook.save(source)
-        finally:
-            workbook.close()
+    if source.suffix.lower() in {".docx", ".xlsx"}:
+        # Solo il testo dei segnaposto cambia: immagini e intestazioni restano intatte
+        fill_office_placeholders(source, employee_name, entry_date)
     return source
 
 
