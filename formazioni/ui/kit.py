@@ -11,6 +11,7 @@ Uso (in FormazioniApp._configure_style, dopo gli style.configure di base):
 """
 from __future__ import annotations
 
+import functools
 import tkinter as tk
 from tkinter import ttk
 
@@ -82,6 +83,15 @@ class UiKit:
     def _rr(self, w, h, r, fill, outline=None, width=1.0) -> ImageTk.PhotoImage:
         return self.photo(rounded_image(w, h, r, fill, outline, width))
 
+    def _tile(self, sz: int) -> tuple[int, int]:
+        """Dimensioni delle immagini degli elementi ttk estendibili. ttk riempie il
+        widget ripetendo la parte centrale dell'immagine: con immagini di pochi pixel
+        un campo largo richiedeva centinaia di disegni con trasparenza a ogni
+        aggiornamento (scorrimento, ridimensionamento, schermo intero). Con un centro
+        ampio ne bastano pochi. La dimensione minima del widget resta sz (opzioni
+        width/height degli elementi)."""
+        return sz + self.px(200), sz + self.px(48)
+
     # --------------------------------------------------------------- install
     def install(self, style: ttk.Style, p: dict[str, str]) -> None:
         """Crea elementi e layout ttk per la palette p (va richiamato a ogni cambio tema)."""
@@ -117,13 +127,14 @@ class UiKit:
         )
         for name, base, hover, press, border, fg in specs:
             bw = self.px(1)
-            normal = self._rr(sz, sz, r, base, border, bw)
-            hov = self._rr(sz, sz, r, hover, border and mix(border, p["focus"], 0.35), bw)
-            prs = self._rr(sz, sz, r, press, border, bw)
-            dis = self._rr(sz, sz, r, p["disabled_bg"])
+            tw, th = self._tile(sz)
+            normal = self._rr(tw, th, r, base, border, bw)
+            hov = self._rr(tw, th, r, hover, border and mix(border, p["focus"], 0.35), bw)
+            prs = self._rr(tw, th, r, press, border, bw)
+            dis = self._rr(tw, th, r, p["disabled_bg"])
             el = f"{g}.{name}.bd"
             style.element_create(el, "image", normal, ("disabled", dis), ("pressed", prs),
-                                 ("active", hov), border=r, sticky="nsew")
+                                 ("active", hov), border=r, sticky="nsew", width=sz, height=sz)
             style.layout(name, [(el, {"sticky": "nsew", "children": [
                 ("Button.padding", {"sticky": "nsew", "children": [
                     ("Button.label", {"sticky": "nsew"})]})]})])
@@ -136,11 +147,12 @@ class UiKit:
     def _field_images(self, fill, border, hover, focus, disabled):
         r = self.px(7)
         sz = 2 * r + 6
+        tw, th = self._tile(sz)
         return r, (
-            self._rr(sz, sz, r, fill, border, self.px(1)),
-            self._rr(sz, sz, r, fill, hover, self.px(1)),
-            self._rr(sz, sz, r, fill, focus, max(1.5, self.scale * 1.6)),
-            self._rr(sz, sz, r, disabled, border, self.px(1)),
+            self._rr(tw, th, r, fill, border, self.px(1)),
+            self._rr(tw, th, r, fill, hover, self.px(1)),
+            self._rr(tw, th, r, fill, focus, max(1.5, self.scale * 1.6)),
+            self._rr(tw, th, r, disabled, border, self.px(1)),
         )
 
     def _chevron(self, color: str) -> ImageTk.PhotoImage:
@@ -162,7 +174,7 @@ class UiKit:
                                              p["focus"], p["disabled_bg"])
         el = f"{g}.Entry.field"
         style.element_create(el, "image", n, ("disabled", d), ("focus", f), ("hover", h),
-                             border=r, sticky="nsew")
+                             border=r, sticky="nsew", width=2 * r + 6, height=2 * r + 6)
         style.layout("TEntry", [(el, {"sticky": "nswe", "children": [
             ("Entry.padding", {"sticky": "nswe", "children": [
                 ("Entry.textarea", {"sticky": "nswe"})]})]})])
@@ -183,7 +195,7 @@ class UiKit:
             r, (n, h, f, d) = self._field_images(fill, border, hover, focus, p["disabled_bg"])
             el = f"{g}.{name}.field"
             style.element_create(el, "image", n, ("disabled", d), ("focus", f), ("hover", h),
-                                 ("pressed", f), border=r, sticky="nsew")
+                                 ("pressed", f), border=r, sticky="nsew", width=2 * r + 6, height=2 * r + 6)
             arr = f"{g}.{name}.arrow"
             style.element_create(arr, "image", self._chevron(arrow),
                                  ("disabled", self._chevron(p["disabled_fg"])), sticky="")
@@ -244,10 +256,11 @@ class UiKit:
     def _progressbar(self, style, g, p) -> None:
         h = self.px(8)
         r = h / 2
-        trough = self._rr(h * 3, h, r, p["trough"])
-        bar = self._rr(h * 3, h, r, p["primary"])
+        trough = self._rr(self.px(240), h, r, p["trough"])
+        bar = self._rr(self.px(240), h, r, p["primary"])
         tr_el, bar_el = f"{g}.Pb.trough", f"{g}.Pb.bar"
-        style.element_create(tr_el, "image", trough, border=(int(r) + 1, 0), sticky="nsew")
+        style.element_create(tr_el, "image", trough, border=(int(r) + 1, 0), sticky="nsew",
+                             width=h * 3, height=h)
         # width=0: a valore 0 la barra non deve mostrare un segmento minimo
         style.element_create(bar_el, "image", bar, border=(int(r) + 1, 0), sticky="nsew", width=0)
         style.layout("Horizontal.TProgressbar", [(tr_el, {"sticky": "nswe", "children": [
@@ -262,7 +275,8 @@ class UiKit:
         w = self.px(12)
         m = self.px(3)
         tw = w - 2 * m  # spessore del cursore
-        length = tw * 3
+        length = self.px(160)  # immagine lunga: meno ripetizioni (vedi _tile)
+        min_length = tw * 3
 
         def thumb(color, vertical: bool) -> ImageTk.PhotoImage:
             im = Image.new("RGBA", (w, length) if vertical else (length, w), (0, 0, 0, 0))
@@ -279,7 +293,8 @@ class UiKit:
             style.element_create(th_el, "image", thumb(p["thumb"], vertical),
                                  ("pressed", thumb(p["thumb_hover"], vertical)),
                                  ("active", thumb(p["thumb_hover"], vertical)),
-                                 border=border, sticky="nsew")
+                                 border=border, sticky="nsew",
+                                 width=w if vertical else min_length, height=min_length if vertical else w)
             name = f"{orient}.TScrollbar"
             style.layout(name, [(tr_el, {"sticky": "ns" if vertical else "ew", "children": [
                 (th_el, {"expand": "1", "sticky": "nswe"})]})])
@@ -291,7 +306,9 @@ class UiKit:
         sz = 2 * r + 4
         for name, key in zip(_PILL_LABELS, ("count_bg", "gold_bg", "secure_bg")):
             el = f"{g}.{name}.pill"
-            style.element_create(el, "image", self._rr(sz, sz, r, p[key]), border=r, sticky="nsew")
+            tw, th = self._tile(sz)
+            style.element_create(el, "image", self._rr(tw, th, r, p[key]), border=r, sticky="nsew",
+                                 width=sz, height=sz)
             style.layout(name, [(el, {"sticky": "nswe", "children": [
                 ("Label.padding", {"sticky": "nswe", "children": [
                     ("Label.label", {"sticky": "nswe"})]})]})])
@@ -390,15 +407,18 @@ class UiKit:
         ramp = Image.linear_gradient("L").rotate(90).resize((w, h))  # 0 a sinistra -> 255 a destra
         ramp = ramp.point(lambda v: max(0, int((1 - (v / 255) / flat_from) * 255)))
         im = Image.composite(Image.new("RGB", (w, h), lighter), im, ramp)
-        # Bagliori sfocati
-        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        # Bagliori sfocati: disegnati e sfocati a 1/4 di risoluzione e poi ingranditi
+        # (sono comunque sfumati), cosi' il ridisegno al ridimensionamento e' rapido.
+        q = 4
+        lw, lh = max(1, w // q), max(1, h // q)
+        layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
         d = ImageDraw.Draw(layer)
-        R = int(h * 1.1)
-        cx, cy = int(w * 0.30), int(h * 1.35)
+        R = h * 1.1 / q
+        cx, cy = w * 0.30 / q, h * 1.35 / q
         d.ellipse((cx - R, cy - R, cx + R, cy + R), fill=_rgb(glow) + (70,))
-        cx2, cy2, R2 = int(w - h * 1.9), int(h * 1.55), int(h * 0.9)
+        cx2, cy2, R2 = (w - h * 1.9) / q, h * 1.55 / q, h * 0.9 / q
         d.ellipse((cx2 - R2, cy2 - R2, cx2 + R2, cy2 + R2), fill=_rgb(glow) + (55,))
-        layer = layer.filter(ImageFilter.GaussianBlur(h * 0.35))
+        layer = layer.filter(ImageFilter.GaussianBlur(h * 0.35 / q)).resize((w, h), Image.BILINEAR)
         im = Image.alpha_composite(im.convert("RGBA"), layer)
         # Puntinatura leggera in alto a sinistra
         dots = ImageDraw.Draw(im)
@@ -414,7 +434,9 @@ class UiKit:
         line = Image.linear_gradient("L").rotate(90).resize((w, lh))
         band = Image.composite(Image.new("RGB", (w, lh), primary), Image.new("RGB", (w, lh), gold), line)
         im.paste(band, (0, h - lh))
-        return self.photo(im.convert("RGB"))
+        # Non va in self._images: lo tiene in vita chi lo usa, e a ogni ridimensionamento
+        # le immagini vecchie si accumulerebbero in memoria.
+        return ImageTk.PhotoImage(im.convert("RGB"), master=self.root)
 
 
 class RoundedPanel(tk.Canvas):
@@ -436,15 +458,21 @@ class RoundedPanel(tk.Canvas):
         self._m = self._blur + px(3)  # margine riservato all'ombra
         self._inset = self._m + max(px(1) + 1, int(self._r * 0.32))
         self._tpl = self._template(outer_bg, fill, border, shadow, shadow_alpha)
-        self._fill = fill
         self.inner = tk.Frame(self, bg=fill, padx=padx, pady=pady)
         self._win = self.create_window(self._inset, self._inset, window=self.inner, anchor="nw")
-        self._bg_item = self.create_image(0, 0, anchor="nw")
-        self.tag_lower(self._bg_item)
-        self._img = None
+        # Ordine di disegno: riempimento, bordi, angoli (sopra ai bordi), contenuto
+        self._fill_item = self.create_rectangle(0, 0, 0, 0, fill=fill, outline="")
+        self._edge_items = [self.create_image(0, 0, anchor="nw") for _ in range(4)]
+        self._corner_items = [self.create_image(0, 0, anchor="nw") for _ in range(4)]
+        for item in (*self._corner_items, *self._edge_items, self._fill_item):
+            self.tag_lower(item)
         self._size = (0, 0)
         self._req = 0
-        self._pending = None
+        try:
+            screen = max(self.winfo_screenwidth(), self.winfo_screenheight())
+        except tk.TclError:
+            screen = 1920
+        self._build_pieces(screen)
         self.bind("<Configure>", self._on_configure)
         self._poll()
 
@@ -462,22 +490,28 @@ class RoundedPanel(tk.Canvas):
         im.alpha_composite(card, (self._m, self._m))
         return im.convert("RGB")
 
-    def _compose(self, w: int, h: int) -> Image.Image:
+    def _build_pieces(self, length: int) -> None:
+        """Angoli e bordi come immagini fisse: al ridimensionamento si spostano solo
+        gli elementi del canvas, senza ridisegnare un'immagine grande quanto la card
+        (che rendeva lenti scorrimento, schermo intero e trascinamento della finestra)."""
         T = self._tpl
         C = self._m + self._r
         tw, th = T.size
-        w, h = max(w, 2 * C + 1), max(h, 2 * C + 1)
-        out = Image.new("RGB", (w, h), self._fill)
-        out.paste(T.crop((0, 0, C, C)), (0, 0))
-        out.paste(T.crop((tw - C, 0, tw, C)), (w - C, 0))
-        out.paste(T.crop((0, th - C, C, th)), (0, h - C))
-        out.paste(T.crop((tw - C, th - C, tw, th)), (w - C, h - C))
         mid = tw // 2
-        out.paste(T.crop((mid, 0, mid + 1, C)).resize((w - 2 * C, C)), (C, 0))
-        out.paste(T.crop((mid, th - C, mid + 1, th)).resize((w - 2 * C, C)), (C, h - C))
-        out.paste(T.crop((0, mid, C, mid + 1)).resize((C, h - 2 * C)), (0, C))
-        out.paste(T.crop((tw - C, mid, tw, mid + 1)).resize((C, h - 2 * C)), (w - C, C))
-        return out
+        photo = functools.partial(ImageTk.PhotoImage, master=self)
+        self._corners = [photo(T.crop(box)) for box in (
+            (0, 0, C, C), (tw - C, 0, tw, C), (0, th - C, C, th), (tw - C, th - C, tw, th))]
+        # Bordi lunghi quanto lo schermo: la parte in eccesso finisce sotto gli
+        # angoli o fuori dal canvas, che la ritaglia.
+        self._edges = [
+            photo(T.crop((mid, 0, mid + 1, C)).resize((length, C))),
+            photo(T.crop((mid, th - C, mid + 1, th)).resize((length, C))),
+            photo(T.crop((0, mid, C, mid + 1)).resize((C, length))),
+            photo(T.crop((tw - C, mid, tw, mid + 1)).resize((C, length))),
+        ]
+        self._edge_len = length
+        for item, image in zip(self._edge_items + self._corner_items, self._edges + self._corners):
+            self.itemconfigure(item, image=image)
 
     def _on_configure(self, event) -> None:
         if (event.width, event.height) == self._size:
@@ -485,16 +519,23 @@ class RoundedPanel(tk.Canvas):
         self._size = (event.width, event.height)
         self.itemconfigure(self._win, width=max(1, event.width - 2 * self._inset),
                            height=max(self.inner.winfo_reqheight(), event.height - 2 * self._inset))
-        if self._pending is None:
-            self._pending = self.after_idle(self._redraw)
+        self._redraw()
 
     def _redraw(self) -> None:
-        self._pending = None
         w, h = self._size
         if w < 2 or h < 2:
             return
-        self._img = ImageTk.PhotoImage(self._compose(w, h), master=self)
-        self.itemconfigure(self._bg_item, image=self._img)
+        C = self._m + self._r
+        if max(w, h) > self._edge_len:
+            self._build_pieces(max(w, h) + 200)
+        top, bottom, left, right = self._edge_items
+        self.coords(self._fill_item, C, C, max(C, w - C), max(C, h - C))
+        self.coords(top, C, 0)
+        self.coords(bottom, C, h - C)
+        self.coords(left, 0, C)
+        self.coords(right, w - C, C)
+        for item, (x, y) in zip(self._corner_items, ((0, 0), (w - C, 0), (0, h - C), (w - C, h - C))):
+            self.coords(item, x, y)
 
     def _poll(self) -> None:
         # Tk non notifica i cambi di dimensione richiesta del contenuto:

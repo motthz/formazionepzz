@@ -2,6 +2,15 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## Non ancora rilasciato
+
+**Correzioni**
+- I modelli Word ed Excel con `*nome*` o `*data*` non perdono più immagini e loghi delle intestazioni: si modifica solo il testo dei segnaposto e il resto del file resta identico all'originale (prima le immagini nella stessa riga del segnaposto venivano cancellate, e in Excel si perdevano immagini d'intestazione, forme e caselle di testo).
+- Un segnaposto spezzato in più parti (per esempio dopo una correzione in Word) viene sostituito anche se nello stesso paragrafo ce n'è un altro.
+- I segnaposto si sostituiscono anche nelle caselle di testo e nelle intestazioni/piè di pagina di prima pagina e pagine pari, e nelle intestazioni di stampa di Excel.
+- Interfaccia molto più fluida durante scorrimento, ridimensionamento e passaggio a schermo intero: pulsanti e campi arrotondati si disegnano con poche operazioni invece di centinaia, le card non ricreano più un'immagine grande quanto la finestra e l'intestazione si ridisegna solo a ridimensionamento finito.
+- Scorrimento con rotellina e touchpad a passi regolari; non scorre più la finestra principale quando si usa la rotellina in un'altra finestra.
+
 ## 2.3.0
 
 **Per chi usa l'app**

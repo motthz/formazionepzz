@@ -525,8 +525,11 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                           font=("Segoe UI Variable Text", 10))
 
         def schedule_paint(_evt=None):
-            if header_state["job"] is None:
-                header_state["job"] = c.after(30, paint_header, _evt)
+            # Si ridisegna solo quando il ridimensionamento si ferma: nel frattempo
+            # resta l'immagine precedente, la cui parte destra ha gia' il colore di fondo.
+            if header_state["job"] is not None:
+                c.after_cancel(header_state["job"])
+            header_state["job"] = c.after(120, paint_header, _evt)
 
         c.bind("<Configure>", schedule_paint)
         c.after(1, paint_header)
@@ -659,82 +662,27 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         scrolled.bind("<Configure>", _on_scroll_config)
         canvas_wrap.bind("<Configure>", _on_canvas_config)
 
-        scrollable_widgets_wheel_local: list[Any] = []
+        # Scorrimento a passi di pochi pixel: con i "units" predefiniti (1/10 della
+        # finestra) ogni scatto saltava di molto e i touchpad, che mandano delta
+        # piccoli, non scorrevano affatto o andavano a scatti.
+        canvas_wrap.configure(yscrollincrement=self._kit.px(10) if self._kit else 10)
+        # Widget che gestiscono da soli la rotellina (liste, menu a tendina...).
+        # Si azzera a ogni ricostruzione dell'interfaccia (cambio tema o lingua).
+        self._wheel_local_widgets = set()
+        self._wheel_remainder = 0.0
 
         def _register_local_wheel(w):
-            scrollable_widgets_wheel_local.append(w)
+            self._wheel_local_widgets.add(str(w))
 
         self._register_local_wheel = _register_local_wheel
 
-        def _is_in_local_widget(evt):
-            try:
-                x_root, y_root = evt.x_root, evt.y_root
-            except Exception:
-                try:
-                    x_root = self.root.winfo_pointerx()
-                    y_root = self.root.winfo_pointery()
-                except Exception:
-                    return False
-            for w in list(scrollable_widgets_wheel_local):
-                try:
-                    if not w.winfo_exists():
-                        continue
-                except Exception:
-                    continue
-                stack = [w]
-                while stack:
-                    cur = stack.pop()
-                    try:
-                        if not cur.winfo_exists():
-                            continue
-                    except Exception:
-                        continue
-                    try:
-                        x0 = cur.winfo_rootx()
-                        y0 = cur.winfo_rooty()
-                        x1 = x0 + cur.winfo_width()
-                        y1 = y0 + cur.winfo_height()
-                    except Exception:
-                        stack.extend(list(getattr(cur, "winfo_children", lambda: [])()))
-                        continue
-                    if x0 <= x_root <= x1 and y0 <= y_root <= y1:
-                        return True
-                    stack.extend(list(getattr(cur, "winfo_children", lambda: [])()))
-            return False
-
-        def _on_wheel(evt):
-            if _is_in_local_widget(evt):
-                return "break"
-            try:
-                if canvas_wrap.winfo_exists():
-                    canvas_wrap.yview_scroll(int(-1 * (evt.delta / 120)), "units")
-            except Exception:
-                pass
-            return "break"
-
-        def _on_wheel_up(_evt):
-            if _is_in_local_widget(_evt):
-                return "break"
-            try:
-                if canvas_wrap.winfo_exists():
-                    canvas_wrap.yview_scroll(-3, "units")
-            except Exception:
-                pass
-            return "break"
-
-        def _on_wheel_down(_evt):
-            if _is_in_local_widget(_evt):
-                return "break"
-            try:
-                if canvas_wrap.winfo_exists():
-                    canvas_wrap.yview_scroll(3, "units")
-            except Exception:
-                pass
-            return "break"
-
-        canvas_wrap.bind_all("<MouseWheel>", _on_wheel, add="+")
-        canvas_wrap.bind_all("<Button-4>", _on_wheel_up, add="+")
-        canvas_wrap.bind_all("<Button-5>", _on_wheel_down, add="+")
+        # I binding globali si installano una volta sola: prima venivano aggiunti a
+        # ogni cambio di tema/lingua e ogni scatto della rotellina li eseguiva tutti.
+        if not getattr(self, "_wheel_bound", False):
+            self.root.bind_all("<MouseWheel>", lambda e: self._on_body_wheel(e, -e.delta / 120), add="+")
+            self.root.bind_all("<Button-4>", lambda e: self._on_body_wheel(e, -1), add="+")
+            self.root.bind_all("<Button-5>", lambda e: self._on_body_wheel(e, 1), add="+")
+            self._wheel_bound = True
 
         self._body = body = ttk.Frame(scrolled, style="App.TFrame", padding=(16, 6, 16, 4))
         body.pack(fill=BOTH, expand=True)
@@ -1300,6 +1248,41 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
             return
         self.template_inclusion[path] = not self.template_inclusion.get(path, True)
         self.update_document_list()
+
+    # ---------------------- Rotellina del mouse --------------------------
+    def _wheel_over_local_widget(self, evt) -> bool:
+        """True se il puntatore e' su un widget che scorre per conto suo."""
+        local = getattr(self, "_wheel_local_widgets", set())
+        if not local:
+            return False
+        try:
+            widget = self.root.winfo_containing(evt.x_root, evt.y_root)
+        except (tk.TclError, KeyError):
+            return False
+        path = str(widget) if widget is not None else ""
+        # Basta risalire il percorso Tk (".!frame.!canvas...") fino alla radice
+        while path:
+            if path in local:
+                return True
+            path = path.rpartition(".")[0]
+        return False
+
+    def _on_body_wheel(self, evt, notches: float):
+        canvas = getattr(self, "_body_canvas", None)
+        if canvas is None or self._wheel_over_local_widget(evt):
+            return "break"
+        try:
+            if not canvas.winfo_exists() or str(canvas.winfo_toplevel()) != str(evt.widget.winfo_toplevel()):
+                return None
+        except (tk.TclError, AttributeError, KeyError):
+            return None
+        # 6 passi da 10 px per scatto; le frazioni dei touchpad si accumulano
+        self._wheel_remainder += notches * 6
+        steps = int(self._wheel_remainder)
+        if steps:
+            self._wheel_remainder -= steps
+            canvas.yview_scroll(steps, "units")
+        return "break"
 
     # ---------------------- Breakpoint responsive ------------------------
     def _on_root_resize(self, evt):
