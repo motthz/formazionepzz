@@ -46,6 +46,12 @@ class BatchMixin:
             return
         n = len(getattr(self, "_inline_batch_rows", []))
         var.set(fmt(n))
+        empty = getattr(self, "_inline_batch_empty", None)
+        if empty is not None and empty.winfo_exists():
+            if n:
+                empty.place_forget()
+            else:
+                empty.place(relx=0.5, rely=0.55, anchor="center")
         run_btn = getattr(self, "_inline_batch_run_btn", None)
         # Dopo un cambio di tema/lingua il riferimento puo' puntare al pulsante distrutto
         if run_btn is not None and run_btn.winfo_exists():

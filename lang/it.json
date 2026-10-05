@@ -1,6 +1,11 @@
 {
   "app_title": "Formazioni PZZ — Dossier Formazione",
   "status_initial": "Scegli una cartella template per iniziare.",
+  "status_no_folder": "La cartella template non esiste ancora.",
+  "status_no_templates": "Nessun template valido. Usa REPARTO_NUMERO_CODICE.",
+  "status_templates_ignored": "{n} template pronti; {ignored} ignorati (nome non valido).",
+  "status_templates_ready": "{n} template pronti.",
+  "bat_empty_hint": "Nessuna persona in elenco.\nScrivi nome e data qui sopra e premi Invio, oppure importa un file CSV/Excel.",
   "count_none": "Nessun documento rilevato",
   "count_label": "  {total} DOCUMENTI  ·  {templates} TEMPLATE  ",
   "eyebrow": "FORMAZIONI  ·  PZZ",

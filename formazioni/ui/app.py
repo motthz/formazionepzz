@@ -27,6 +27,7 @@ from ..config import (
     resolve_theme,
     save_settings,
 )
+from ..icons import BUTTON_ICONS, strip_leading_symbol
 from ..logs import setup_error_log
 from ..pdf import build_pdf
 from ..system import (
@@ -110,14 +111,13 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self._update_check_running = False
 
         self.root.title(self.tr("app_title"))
-        self.root.geometry("1120x820")
-        self.root.minsize(980, 720)
         try:
             _set_app_icon(self.root)
         except Exception:
             pass
 
         self._configure_style()
+        self._place_window()
         self._apply_theme_root()
         self._build_scaffold()
         self._build_header()
@@ -151,6 +151,18 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                     self._rebuild_ui()
         finally:
             self.root.after(SYSTEM_THEME_POLL_MS, self._follow_system_theme)
+
+    def _place_window(self) -> None:
+        """Finestra proporzionata a schermo e DPI, centrata (prima era fissa a 1120x820)."""
+        kit = getattr(self, "_kit", None)
+        scale = kit.scale if kit else 1.0
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w = max(min(round(1260 * scale), sw - 40), min(980, sw))
+        h = max(min(round(900 * scale), sh - 90), min(680, sh))
+        self.root.minsize(min(980, sw), min(680, sh))
+        x, y = max(0, (sw - w) // 2), max(0, (sh - 60 - h) // 2)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self._current_width = w
 
     def _persist_settings(self) -> None:
         self.settings["theme"] = self.theme_pref
@@ -473,12 +485,26 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
     # ---------------------------- Header ----------------------------------
     def _build_header(self):
         dark = self.theme.get() == "dark"
-        header_outer = tk.Frame(self.root, bg=self._style_colors["app_bg"], height=160)
-        header_outer.pack(fill=X, side="top")
-        header_outer.pack_propagate(False)
+        px = self._kit.px
+        # Font dei tre testi: l'altezza dell'intestazione si ricava dalle loro righe,
+        # cosi' resta compatta e non taglia nulla a 125-200% di scala.
+        f_eyebrow = ("Segoe UI Variable Text Semibold", 8, "bold")
+        f_title = ("Segoe UI Variable Display Semib", 21, "bold")
+        f_sub = ("Segoe UI Variable Text", 10)
+
+        def linespace(font) -> int:
+            return int(self.root.tk.call("font", "metrics", font, "-linespace"))
+
+        pad_y = px(14)
+        text_h = linespace(f_eyebrow) + linespace(f_title) + linespace(f_sub)
+        logo_h = 0
+        header_h = max(text_h, px(64)) + 2 * pad_y + px(3)
+
+        header_outer = tk.Frame(self.root, bg=self._style_colors["app_bg"])
+        header_outer.pack(fill=X, side="top", pady=(0, px(10)))
 
         title_bg = self._style_colors["title_bg"]
-        c = tk.Canvas(header_outer, height=148, highlightthickness=0, bd=0, bg=title_bg)
+        c = tk.Canvas(header_outer, height=header_h, highlightthickness=0, bd=0, bg=title_bg)
         c.pack(fill=X, side="top")
 
         try:
@@ -491,8 +517,13 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                 rgba, ww, hh = _build_in_memory_icon(64, 64)
                 logo_img = tk.PhotoImage(data=_png_from_rgba(rgba, ww, hh))
             self._header_logo = logo_img
+            logo_h = logo_img.height()
         except Exception:
             self._header_logo = None
+        if logo_h > header_h - 2 * pad_y - px(3):
+            header_h = logo_h + 2 * pad_y + px(3)
+            c.configure(height=header_h)
+        mid_y = (header_h - px(3)) // 2
 
         colors = self._style_colors
         # Logo e testi disegnati direttamente sul canvas: niente riquadri di
@@ -509,20 +540,20 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
             c.delete("all")
             # Sfondo renderizzato: sfumatura, bagliori sfocati, puntinatura e filetto oro
             header_state["img"] = self._kit.header_image(
-                w, 148, title_bg, glow, colors["gold"], colors["primary_bg"])
+                w, header_h, title_bg, glow, colors["gold"], colors["primary_bg"])
             c.create_image(0, 0, image=header_state["img"], anchor="nw")
-            x = 42
+            x = px(32)
             if self._header_logo is not None:
-                c.create_image(x, 72, image=self._header_logo, anchor="w")
-                x += self._header_logo.width() + 22
-            item = c.create_text(x, 24, anchor="nw", text=self.tr("eyebrow"),
-                                 fill=colors["gold"], font=("Segoe UI Variable Text Semibold", 8, "bold"))
-            item = c.create_text(x - 2, c.bbox(item)[3] + 1, anchor="nw",
+                c.create_image(x, mid_y, image=self._header_logo, anchor="w")
+                x += self._header_logo.width() + px(18)
+            item = c.create_text(x, mid_y - text_h // 2, anchor="nw", text=self.tr("eyebrow"),
+                                 fill=colors["gold"], font=f_eyebrow)
+            item = c.create_text(x - 1, c.bbox(item)[3], anchor="nw",
                                  text=self.tr("header_title"), fill=colors["title_fg"],
-                                 font=("Segoe UI Variable Display Semib", 27, "bold"))
-            c.create_text(x, c.bbox(item)[3] + 1, anchor="nw",
+                                 font=f_title)
+            c.create_text(x, c.bbox(item)[3] - 1, anchor="nw",
                           text=self.tr("header_subtitle"), fill=colors["subtitle_fg"],
-                          font=("Segoe UI Variable Text", 10))
+                          font=f_sub)
 
         def schedule_paint(_evt=None):
             # Si ridisegna solo quando il ridimensionamento si ferma: nel frattempo
@@ -535,7 +566,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         c.after(1, paint_header)
 
         controls = tk.Frame(header_outer, bg=title_bg)
-        controls.place(relx=1.0, x=-42, y=28, anchor="ne")
+        controls.place(relx=1.0, x=-px(32), y=mid_y, anchor="e")
         row = tk.Frame(controls, bg=title_bg)
         row.pack(anchor="e")
 
@@ -549,14 +580,6 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         )
         theme_switch.current(theme_choices.index(self.theme_pref))
         theme_switch.pack(side=LEFT, padx=(0, 18))
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(theme_switch)
-        except Exception:
-            pass
-
-
         tk.Label(row, text=self.tr("lbl_language") + "  ", bg=title_bg,
                  fg=self._style_colors["subtitle_fg"],
                  font=("Segoe UI Semibold", 9, "bold")).pack(side=LEFT)
@@ -571,14 +594,6 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                                   style="Header.TCombobox")
         lang_combo.current(current_idx)
         lang_combo.pack(side=LEFT)
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(lang_combo)
-        except Exception:
-            pass
-
-
         def on_theme(_e=None):
             chosen = theme_switch.current()
             if not 0 <= chosen < len(theme_choices):
@@ -695,7 +710,10 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self._build_card2(body)
         self._build_card3(body)
         self._build_footer(body)
-        self._apply_breakpoint()
+        # Le card appena create sono in due colonne; le misure richieste dai
+        # contenuti sono pronte solo dopo il primo calcolo del layout.
+        self._current_breakpoint = "wide"
+        self.root.after_idle(self._apply_breakpoint_when_measured)
 
     def _card(self, parent, title=None, subtitle=None, accent=None, **kwargs):
         colors = self._style_colors
@@ -704,7 +722,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                              fill=colors["card_body_bg"], border=colors["sh2"],
                              shadow=colors["sh_shadow"],
                              shadow_alpha=150 if self.theme.get() == "dark" else 38,
-                             padx=22, pady=18)
+                             padx=22, pady=16)
         shadow1 = panel
         inner = panel.inner
 
@@ -717,10 +735,10 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                 number, label = (part.strip() for part in accent.split("·", 1))
             if number:
                 kit = self._kit
-                badge = kit.pill(kit.px(42), kit.px(42), colors["count_bg"], r=kit.px(12))
+                badge = kit.pill(kit.px(38), kit.px(38), colors["count_bg"], r=kit.px(11))
                 tk.Label(head, text=number, image=badge, compound="center", bd=0,
                          bg=colors["card_body_bg"], fg=colors["count_fg"],
-                         font=("Segoe UI Variable Display Semib", 13, "bold"),
+                         font=("Segoe UI Variable Display Semib", 12, "bold"),
                          ).pack(side=LEFT, padx=(0, 14), anchor="center")
             left = tk.Frame(head, bg=colors["card_body_bg"])
             left.pack(side=LEFT, fill=X, expand=True)
@@ -730,18 +748,34 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                 ttk.Label(left, text=title, style="Section.TLabel").pack(anchor="w", pady=(1, 0))
             # Divisore: breve tratto oro su linea sottile
             divider = tk.Frame(inner, bg=colors["card_body_bg"], height=3)
-            divider.pack(fill=X, pady=(16, 18))
+            divider.pack(fill=X, pady=(12, 14))
             tk.Frame(divider, bg=colors["sh2"]).place(x=0, y=1, relwidth=1.0, height=1)
             accent_line = self._kit.pill(self._kit.px(48), 3, colors["gold"])
             tk.Label(divider, image=accent_line, bd=0, bg=colors["card_body_bg"]
                      ).place(x=0, y=0, height=3)
 
         if subtitle:
-            ttk.Label(inner, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(0, 16))
+            ttk.Label(inner, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
 
         body = tk.Frame(inner, bg=colors["card_body_bg"])
         body.pack(fill=BOTH, expand=True)
         return shadow1, body
+
+    @staticmethod
+    def _fluid_wrap(label, inset: int = 0) -> None:
+        """Testo che va a capo sulla larghezza assegnata all'etichetta.
+
+        Con width=1 l'etichetta non impone la propria larghezza alla card: cosi'
+        una frase lunga non decide da sola se le card stanno affiancate.
+        """
+        label.configure(width=1)
+
+        def fit(evt):
+            wrap = max(120, evt.width - inset - 2)
+            if str(label.cget("wraplength")) != str(wrap):
+                label.configure(wraplength=wrap)
+
+        label.bind("<Configure>", fit, add="+")
 
     def _field_label(self, parent, text, row, col=0, span=2, label_col_width=160):
         lbl = tk.Label(
@@ -846,25 +880,13 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
             lambda parent: ttk.Entry(parent, textvariable=self.employee_name))
         self._add_tooltip(name_entry, lambda: self.tr("tt_name") + "  " + self.tr("sc_enter_hint"))
         name_entry.bind("<Return>", lambda _e: self._inline_batch_add_current())
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(name_entry)
-        except Exception:
-            pass
-
-
+        self._register_local_wheel(name_entry)
         dp = add_row(1, self.tr("lbl_date"),
             lambda parent: DatePickerFrame(parent, self.language,
                                            bg=self._style_colors["card_body_bg"]))
         self.date_picker = dp
         self._add_tooltip(self.date_picker, lambda: self.tr("tt_date"))
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(self.date_picker)
-        except Exception:
-            pass
+        self._register_local_wheel(self.date_picker)
 
         for w in (self.date_picker.day_cb, self.date_picker.month_cb, self.date_picker.year_cb):
             self._add_tooltip(w, lambda: self.tr("tt_date"))
@@ -876,16 +898,19 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         batch_box.columnconfigure(1, weight=1)
         batch_box.rowconfigure(0, weight=1)
 
+        list_icon = self._icon(BUTTON_ICONS.get("bat_inline_title"), "Count.TLabel")
         bt = tk.Label(
             batch_box,
-            text="   " + self.tr("bat_inline_title"),
+            text=("  " + strip_leading_symbol(self.tr("bat_inline_title"))) if list_icon
+            else "   " + self.tr("bat_inline_title"),
+            image=list_icon or "", compound="left", padx=10,
             bg=self._style_colors["count_bg"], fg=self._style_colors["count_fg"],
             font=("Segoe UI Semibold", 10, "bold"), anchor="w", pady=7,
         )
         bt.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Label(batch_box, text=self.tr("bat_inline_subtitle"),
-                  style="Muted.TLabel"
-                  ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        batch_hint = ttk.Label(batch_box, text=self.tr("bat_inline_subtitle"), style="Muted.TLabel")
+        batch_hint.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self._fluid_wrap(batch_hint)
 
         people_tree_wrap = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
         people_tree_wrap.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
@@ -895,9 +920,9 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         people_tree = ttk.Treeview(people_tree_wrap, columns=batch_body_columns,
                                    show="headings", height=8)
         for col_key, heading, width in (
-            ("nome", self.tr("col_name"), 200),
-            ("data", self.tr("col_date"), 150),
-            ("reparto", self.tr("col_dept"), 160),
+            ("nome", self.tr("col_name"), 180),
+            ("data", self.tr("col_date"), 110),
+            ("reparto", self.tr("col_dept"), 150),
         ):
             people_tree.heading(col_key, text=heading)
             people_tree.column(col_key, width=width, anchor="w")
@@ -907,14 +932,12 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         people_tree.configure(yscrollcommand=p_sb.set)
         self._inline_batch_tree = people_tree
         self._inline_batch_rows: list[dict[str, str]] = []
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(self._inline_batch_tree)
-        except Exception:
-            pass
-
-
+        self._register_local_wheel(self._inline_batch_tree)
+        # Messaggio al centro dell'elenco vuoto (nascosto dalla prima persona aggiunta)
+        self._inline_batch_empty = tk.Label(
+            people_tree, text=self.tr("bat_empty_hint"), justify="center",
+            bg=self._style_colors["card_body_bg"], fg=self._style_colors["text_muted"],
+            font=("Segoe UI", 9), wraplength=360)
         actions = tk.Frame(batch_box, bg=self._style_colors["card_body_bg"])
         actions.grid(row=3, column=0, columnspan=2, sticky="ew")
         # Due righe: modifica dell'elenco sopra, import/modello da file sotto
@@ -953,7 +976,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         run_count_lbl.pack(side=LEFT)
         btn_run = self._button(batch_run_wrap, "bat_run_all", style="Primary.TButton",
                              command=self._inline_batch_run)
-        btn_run.pack(side=RIGHT, ipadx=14, ipady=5)
+        btn_run.pack(side=RIGHT, ipadx=8, ipady=5)
         self._inline_batch_run_btn = btn_run
         self._refresh_inline_batch_count()
         self._add_tooltip(btn_run, lambda: self.tr("tt_batch_run") + "  (Ctrl+B)")
@@ -1010,14 +1033,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self.department_combo.grid(row=0, column=0, sticky="ew")
         self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
         self._single_dept_wrap = single_wrap
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(self.department_combo)
-        except Exception:
-            pass
-
-
+        self._register_local_wheel(self.department_combo)
         multi_wrap = tk.Frame(dept_frame, bg=self._style_colors["card_body_bg"])
         multi_wrap.grid(row=2, column=0, columnspan=2, sticky="ew")
         multi_wrap.grid_remove()
@@ -1067,7 +1083,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self.tree.heading("copie", text=self.tr("col_copies"))
         self.tree.heading("stato", text=self.tr("col_status"))
         self.tree.column("include", width=46, anchor="center", stretch=False)
-        self.tree.column("documento", width=280, anchor="w", stretch=True)
+        self.tree.column("documento", width=240, anchor="w", stretch=True)
         self.tree.column("copie", width=70, anchor="center", stretch=False)
         self.tree.column("stato", width=96, anchor="center", stretch=False)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -1075,12 +1091,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         tree_sb.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=tree_sb.set)
         self.tree.bind("<Button-1>", self._on_tree_click)
-        try:
-            _reg = getattr(self, "_register_local_wheel", None)
-            if callable(_reg):
-                _reg(self.tree)
-        except Exception:
-            pass
+        self._register_local_wheel(self.tree)
 
         self.tree.bind("<space>", lambda _e: self._toggle_focused_row())
         self._add_tooltip(self.tree, lambda: self.tr("tt_include"))
@@ -1108,7 +1119,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         gen_buttons.pack(fill=X)
         gen_btn = self._button(gen_buttons, "btn_generate",
                              style="Primary.TButton", command=self.generate)
-        gen_btn.pack(side=RIGHT, ipadx=18, ipady=5)
+        gen_btn.pack(side=RIGHT, ipadx=8, ipady=5)
         preview_btn = self._button(gen_buttons, "btn_preview",
                                  style="Secondary.TButton", command=self.preview)
         preview_btn.pack(side=RIGHT, padx=(0, 10), ipady=5)
@@ -1121,16 +1132,16 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
 
         help_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
         help_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
-        tk.Frame(help_frame, bg=self._style_colors["count_bg"], width=4, height=56).pack(side=LEFT)
-        help_wrap_length = 380
+        tk.Frame(help_frame, bg=self._style_colors["count_bg"], width=4).pack(side=LEFT, fill="y")
         tip = tk.Label(
             help_frame, text=self.tr("help_tip_body"),
             bg=self._style_colors["card_body_bg"], fg=self._style_colors["text_muted"],
             font=("Segoe UI", 9), justify="left", anchor="w",
-            padx=12, pady=8, wraplength=help_wrap_length,
+            padx=12, pady=6,
         )
         self._help_tip_label = tip
         tip.pack(side=LEFT, fill=X, expand=True)
+        self._fluid_wrap(tip, inset=2 * 12)
 
         self._toggle_multi_dept()
 
@@ -1161,7 +1172,14 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                  font=("Segoe UI", 8), anchor="w", padx=14,
                  ).pack(side=LEFT)
 
-        secure = ttk.Label(footer, text=self.tr("secure_label"), style="Secure.TLabel")
+        # Icona disegnata al posto dell'emoji: cercare un font con l'emoji costava
+        # quasi mezzo secondo all'avvio, e la resa cambiava da un PC all'altro.
+        secure_icon = self._icon(BUTTON_ICONS.get("secure_label"), "Secure.TLabel")
+        secure_text = self.tr("secure_label")
+        if secure_icon is not None:
+            secure_text = " " + strip_leading_symbol(secure_text)
+        secure = ttk.Label(footer, text=secure_text, style="Secure.TLabel",
+                           image=secure_icon or "", compound="left")
         secure.pack(side=RIGHT)
         self._footer = footer_outer
 
@@ -1294,8 +1312,24 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         except Exception:
             pass
 
+    def _two_columns_fit(self) -> bool:
+        """True se le card 02 e 03 stanno affiancate senza tagliare pulsanti o testi."""
+        cards = (getattr(self, "_card2_shadow", None), getattr(self, "_card3_shadow", None))
+        if not self._current_width or any(c is None or not c.winfo_exists() for c in cards):
+            return True
+        kit = getattr(self, "_kit", None)
+        chrome = 2 * 16 + 2 + (kit.px(12) if kit else 12) + 8  # margini, spazio, barra
+        return self._current_width >= sum(c.required_width() for c in cards) + chrome
+
+    def _apply_breakpoint_when_measured(self):
+        try:
+            self.root.update_idletasks()  # completa il calcolo delle misure richieste
+            self._apply_breakpoint()
+        except tk.TclError:
+            pass
+
     def _apply_breakpoint(self):
-        want = "narrow" if self._current_width and self._current_width < 1100 else "wide"
+        want = "wide" if self._two_columns_fit() else "narrow"
         if want == self._current_breakpoint:
             return
         self._current_breakpoint = want
@@ -1421,8 +1455,8 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         for tpl in self.templates:
             if tpl.path not in self.template_inclusion:
                 self.template_inclusion[tpl.path] = True
-        stale = [p for p in list(self.template_inclusion.keys())
-                 if not any(t.path == p for t in self.templates)]
+        current_paths = {t.path for t in self.templates}
+        stale = [p for p in self.template_inclusion if p not in current_paths]
         for s in stale:
             del self.template_inclusion[s]
         self.hash_status = classify_template_hashes(self.templates, self.saved_hashes)
@@ -1432,13 +1466,14 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         new = sum(1 for v in self.hash_status.values() if v == "new")
         self.hash_stat_label.set(self.tr("hash_status", ok=ok, mod=mod, new=new))
         if not folder.exists():
-            self.status.set("La cartella template non esiste ancora.")
+            self.status.set(self.tr("status_no_folder"))
         elif not self.templates:
-            self.status.set("Nessun template valido. Usa REPARTO_NUMERO_CODICE.")
+            self.status.set(self.tr("status_no_templates"))
         elif self.ignored:
-            self.status.set(f"{len(self.templates)} template; {len(self.ignored)} ignorati.")
+            self.status.set(self.tr("status_templates_ignored", n=len(self.templates),
+                                    ignored=len(self.ignored)))
         else:
-            self.status.set(f"{len(self.templates)} template pronti.")
+            self.status.set(self.tr("status_templates_ready", n=len(self.templates)))
 
     def update_document_list(self) -> None:
         if not hasattr(self, "tree") or self.tree is None:

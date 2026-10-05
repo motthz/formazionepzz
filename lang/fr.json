@@ -1,6 +1,11 @@
 {
   "app_title": "Formazioni PZZ — Dossier de formation",
   "status_initial": "Choisissez un dossier de modèles pour commencer.",
+  "status_no_folder": "Le dossier des modèles n'existe pas encore.",
+  "status_no_templates": "Aucun modèle valide. Utilisez SERVICE_NOMBRE_CODE.",
+  "status_templates_ignored": "{n} modèles prêts ; {ignored} ignorés (nom non valide).",
+  "status_templates_ready": "{n} modèles prêts.",
+  "bat_empty_hint": "Personne dans la liste pour l'instant.\nSaisissez le nom et la date ci-dessus puis Entrée, ou importez un fichier CSV/Excel.",
   "count_none": "Aucun document détecté",
   "count_label": "  {total} DOCUMENTS  ·  {templates} MODÈLES  ",
   "eyebrow": "FORMATION  ·  PZZ",

@@ -1,6 +1,11 @@
 {
   "app_title": "Formazioni PZZ — Ausbildungsakte",
   "status_initial": "Wählen Sie einen Vorlagenordner, um zu beginnen.",
+  "status_no_folder": "Der Vorlagenordner existiert noch nicht.",
+  "status_no_templates": "Keine gültigen Vorlagen. Verwenden Sie ABTEILUNG_ANZAHL_CODE.",
+  "status_templates_ignored": "{n} Vorlagen bereit; {ignored} ignoriert (ungültiger Name).",
+  "status_templates_ready": "{n} Vorlagen bereit.",
+  "bat_empty_hint": "Noch niemand in der Liste.\nName und Datum oben eingeben und Enter drücken oder eine CSV-/Excel-Datei importieren.",
   "count_none": "Keine Dokumente gefunden",
   "count_label": "  {total} DOKUMENTE  ·  {templates} VORLAGEN  ",
   "eyebrow": "AUSBILDUNG  ·  PZZ",

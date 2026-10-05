@@ -51,7 +51,9 @@ def rounded_image(w: int, h: int, r: float, fill, outline=None, width: float = 1
                             max(0, rad - inset), fill=fill)
     else:
         d.rounded_rectangle((0, 0, W - 1, H - 1), rad, fill=fill)
-    return im.resize((max(1, w), max(1, h)), Image.LANCZOS)
+    # Media dei blocchi SSxSS: e' l'anti-aliasing corretto ed e' molto piu' veloce di
+    # LANCZOS, che con le immagini grandi degli elementi rallentava l'avvio
+    return im.reduce(SS)
 
 
 class UiKit:
@@ -62,6 +64,7 @@ class UiKit:
         except tk.TclError:
             self.scale = 1.0
         self._images: list[ImageTk.PhotoImage] = []
+        self._old_images: list[ImageTk.PhotoImage] = []
         self._gen = 0
         self._variants: dict[str, str] = {}
         self._adapt_bound = False
@@ -96,6 +99,9 @@ class UiKit:
     def install(self, style: ttk.Style, p: dict[str, str]) -> None:
         """Crea elementi e layout ttk per la palette p (va richiamato a ogni cambio tema)."""
         self.style, self.p = style, p
+        # Le immagini del tema precedente restano vive per un giro (i widget vecchi
+        # vengono distrutti subito dopo); quelle di due temi fa si possono liberare.
+        self._old_images, self._images = self._images, []
         self._gen += 1
         self._variants = {}
         g = f"pzz{self._gen}"
@@ -285,11 +291,13 @@ class UiKit:
             im.paste(pill, (m, 0) if vertical else (0, m))
             return self.photo(im)
 
-        empty = self.photo(Image.new("RGBA", (w, w), (0, 0, 0, 0)))
         for orient, vertical in (("Vertical", True), ("Horizontal", False)):
             tr_el, th_el = f"{g}.{orient}.Sb.trough", f"{g}.{orient}.Sb.thumb"
             border = (0, tw // 2 + 1) if vertical else (tw // 2 + 1, 0)
-            style.element_create(tr_el, "image", empty, sticky="nsew")
+            # Guida trasparente lunga: anche lei viene ripetuta a piastrelle
+            empty = self.photo(Image.new("RGBA", (w, length) if vertical else (length, w),
+                                         (0, 0, 0, 0)))
+            style.element_create(tr_el, "image", empty, sticky="nsew", width=w, height=w)
             style.element_create(th_el, "image", thumb(p["thumb"], vertical),
                                  ("pressed", thumb(p["thumb_hover"], vertical)),
                                  ("active", thumb(p["thumb_hover"], vertical)),
@@ -475,6 +483,10 @@ class RoundedPanel(tk.Canvas):
         self._build_pieces(screen)
         self.bind("<Configure>", self._on_configure)
         self._poll()
+
+    def required_width(self) -> int:
+        """Larghezza minima perche' il contenuto non venga tagliato."""
+        return self.inner.winfo_reqwidth() + 2 * self._inset
 
     def _template(self, outer_bg, fill, border, shadow, alpha) -> Image.Image:
         C = self._m + self._r
