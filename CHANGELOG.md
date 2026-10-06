@@ -2,6 +2,13 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## 2.5.0
+
+**Per chi usa l'app**
+- **Niente più pagina introduttiva**: il dossier contiene solo i moduli, senza la copertina "Dossier Formazione" con nome, data e reparto.
+- **Niente nome del file o del foglio in fondo alla pagina**: i campi "Nome file" dei modelli Word (che stampavano il nome del file temporaneo, per esempio `1-MAGAZZINO_1_MAG.docx`) e i codici nome file/nome foglio delle intestazioni Excel vengono tolti; il resto dell'intestazione e del piè di pagina (loghi, numeri di pagina, testi) resta com'è.
+- **Documenti scelti per più persone**: con persone nell'elenco batch, sotto la lista dei documenti compare che le spunte valgono per tutte (e di quale reparto sono). Aggiungendo una persona di un altro reparto l'app chiede conferma; dopo l'importazione di un file con persone tutte dello stesso reparto, la lista mostra quel reparto, così si spuntano proprio i documenti che riceveranno.
+
 ## 2.4.0
 
 **Per chi usa l'app**

@@ -19,7 +19,7 @@ Serve Windows per l'interfaccia completa e per la conversione con Microsoft Offi
 | `formazioni/config.py` | versione, percorsi, impostazioni, lingue |
 | `formazioni/templates.py` | nomi dei moduli, reparti, impronte MD5 |
 | `formazioni/office.py` | conversione con Word/Excel o LibreOffice |
-| `formazioni/pdf.py` | motore dei dossier: copertina, unione, filigrana, batch, cache |
+| `formazioni/pdf.py` | motore dei dossier: unione, filigrana, batch, cache |
 | `formazioni/ui/` | interfaccia: `app.py` finestra principale, `batch.py`, `history.py`, `settings.py`, `dialogs.py`, `feedback.py`, `kit.py` (grafica) |
 | `lang/*.json` | testi nelle 5 lingue |
 | `installer/` | programma di installazione |

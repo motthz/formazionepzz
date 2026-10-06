@@ -250,5 +250,10 @@
   "st_open_log": "Apri registro errori",
   "up_install": "Aggiorna ora",
   "up_downloading": "Scaricamento della versione {version}… Formazioni PZZ si chiuderà e si riaprirà aggiornato.",
-  "up_failed": "Aggiornamento automatico non riuscito: {e}"
+  "up_failed": "Aggiornamento automatico non riuscito: {e}",
+  "bat_scope_same": "☑ Le spunte valgono per tutte le {n} persone in elenco (reparto {d}).",
+  "bat_scope_mixed": "☑ Le spunte valgono per tutte le {n} persone in elenco. Attenzione: sono di reparti diversi.",
+  "bat_mixed_title": "Reparto diverso",
+  "bat_mixed_body": "Nell'elenco ci sono persone del reparto {d}, {name} è di {new}.\n\nI documenti spuntati valgono per tutto l'elenco: per scegliere quali documenti generare conviene che le persone siano dello stesso reparto.\n\nAggiungere comunque?",
+  "bat_mixed_many": "più reparti"
 }

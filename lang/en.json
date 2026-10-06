@@ -250,5 +250,10 @@
   "st_open_log": "Open error log",
   "up_install": "Update now",
   "up_downloading": "Downloading version {version}… Formazioni PZZ will close and reopen updated.",
-  "up_failed": "Automatic update failed: {e}"
+  "up_failed": "Automatic update failed: {e}",
+  "bat_scope_same": "☑ The ticks apply to all {n} people in the list (department {d}).",
+  "bat_scope_mixed": "☑ The ticks apply to all {n} people in the list. Note: they belong to different departments.",
+  "bat_mixed_title": "Different department",
+  "bat_mixed_body": "The list contains people from department {d}, {name} is from {new}.\n\nThe ticked documents apply to the whole list: to choose which documents to generate, people should be in the same department.\n\nAdd anyway?",
+  "bat_mixed_many": "several departments"
 }

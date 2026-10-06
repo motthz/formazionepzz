@@ -250,5 +250,10 @@
   "st_open_log": "Fehlerprotokoll öffnen",
   "up_install": "Jetzt aktualisieren",
   "up_downloading": "Version {version} wird heruntergeladen… Formazioni PZZ wird geschlossen und aktualisiert neu geöffnet.",
-  "up_failed": "Automatische Aktualisierung fehlgeschlagen: {e}"
+  "up_failed": "Automatische Aktualisierung fehlgeschlagen: {e}",
+  "bat_scope_same": "☑ Die Häkchen gelten für alle {n} Personen der Liste (Abteilung {d}).",
+  "bat_scope_mixed": "☑ Die Häkchen gelten für alle {n} Personen der Liste. Achtung: verschiedene Abteilungen.",
+  "bat_mixed_title": "Andere Abteilung",
+  "bat_mixed_body": "Die Liste enthält Personen der Abteilung {d}, {name} gehört zu {new}.\n\nDie angehakten Dokumente gelten für die ganze Liste: um die Dokumente auszuwählen, sollten die Personen derselben Abteilung angehören.\n\nTrotzdem hinzufügen?",
+  "bat_mixed_many": "mehreren Abteilungen"
 }

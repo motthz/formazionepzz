@@ -26,7 +26,7 @@ body:
     attributes:
       label: Versione di Formazioni PZZ
       description: La trovi in Impostazioni, sotto "Origine aggiornamenti".
-      placeholder: "2.3.1"
+      placeholder: "2.5.0"
     validations:
       required: true
   - type: dropdown

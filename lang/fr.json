@@ -250,5 +250,10 @@
   "st_open_log": "Ouvrir le journal des erreurs",
   "up_install": "Mettre à jour",
   "up_downloading": "Téléchargement de la version {version}… Formazioni PZZ va se fermer et se rouvrir à jour.",
-  "up_failed": "La mise à jour automatique a échoué : {e}"
+  "up_failed": "La mise à jour automatique a échoué : {e}",
+  "bat_scope_same": "☑ Les coches s'appliquent aux {n} personnes de la liste (service {d}).",
+  "bat_scope_mixed": "☑ Les coches s'appliquent aux {n} personnes de la liste. Attention : services différents.",
+  "bat_mixed_title": "Service différent",
+  "bat_mixed_body": "La liste contient des personnes du service {d}, {name} appartient à {new}.\n\nLes documents cochés valent pour toute la liste : pour choisir les documents à générer, les personnes doivent être du même service.\n\nAjouter quand même ?",
+  "bat_mixed_many": "plusieurs services"
 }

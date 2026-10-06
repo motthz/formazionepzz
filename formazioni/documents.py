@@ -40,6 +40,9 @@ _A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 _WORD_PART = re.compile(r"word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml")
 _SHEET_PART = re.compile(r"xl/(sharedStrings|worksheets/sheet\d+|drawings/drawing\d+)\.xml")
+# Codici delle intestazioni Excel: "&&" (& letterale), "&X" (codice), testo semplice
+_HEADER_TOKEN = re.compile(r'&&|&"[^"]*"|&\d+|&.|[^&]+', re.DOTALL)
+_SECTION_CODES = {"&L", "&C", "&R"}
 _SHEET_HEADERS = ("oddHeader", "oddFooter", "evenHeader", "evenFooter", "firstHeader", "firstFooter")
 
 
@@ -101,17 +104,66 @@ def _grouped_text_nodes(root, container_tag: str, text_tag: str) -> list[list]:
     return [nodes for nodes in groups.values() if nodes]
 
 
-def _replace_in_xml_root(root, employee_name: str, entry_date: str) -> bool:
+def _strip_sheet_name_code(node) -> bool:
+    """Toglie da un'intestazione/pie' di pagina Excel i codici &A (nome del foglio)
+    e &F (nome del file), che altrimenti finiscono stampati nel dossier, e le
+    sezioni (&L, &C, &R) rimaste vuote. "&&" e' una & letterale e resta."""
+    text = node.text or ""
+    tokens = [t for t in _HEADER_TOKEN.findall(text) if t not in {"&A", "&F"}]
+    if len(tokens) == len(_HEADER_TOKEN.findall(text)):
+        return False
+    kept = [t for i, t in enumerate(tokens)
+            if t not in _SECTION_CODES or (i + 1 < len(tokens) and tokens[i + 1] not in _SECTION_CODES)]
+    node.text = "".join(kept)
+    return True
+
+
+def _remove_filename_fields(root) -> bool:
+    """Toglie da Word i campi FILENAME ("Nome file"). Nel dossier stamperebbero il
+    nome del file temporaneo usato per la conversione, tipicamente in fondo alla pagina."""
     changed = False
-    for container, text in ((f"{{{_W}}}p", f"{{{_W}}}t"),
-                            (f"{{{_S}}}si", f"{{{_S}}}t"),
-                            (f"{{{_S}}}is", f"{{{_S}}}t"),
-                            (f"{{{_A}}}p", f"{{{_A}}}t")):
-        for nodes in _grouped_text_nodes(root, container, text):
-            changed |= _replace_in_text_nodes(nodes, employee_name, entry_date)
+    for simple in list(root.iter(f"{{{_W}}}fldSimple")):
+        if simple.get(f"{{{_W}}}instr", "").strip().upper().startswith("FILENAME"):
+            simple.getparent().remove(simple)
+            changed = True
+    # Campi "complessi": run da fldChar begin a fldChar end, con il codice in instrText
+    open_fields: list[dict] = []
+    to_remove: list = []
+    for run in root.iter(f"{{{_W}}}r"):
+        char = run.find(f"{{{_W}}}fldChar")
+        kind = char.get(f"{{{_W}}}fldCharType") if char is not None else None
+        if kind == "begin":
+            open_fields.append({"runs": [], "code": ""})
+        for field in open_fields:
+            field["runs"].append(run)
+        if open_fields:
+            for instr in run.iter(f"{{{_W}}}instrText"):
+                open_fields[-1]["code"] += instr.text or ""
+        if kind == "end" and open_fields:
+            field = open_fields.pop()
+            if field["code"].strip().upper().startswith("FILENAME"):
+                to_remove.extend(field["runs"])
+    for run in to_remove:
+        if run.getparent() is not None:
+            run.getparent().remove(run)
+            changed = True
+    return changed
+
+
+def _replace_in_xml_root(root, employee_name: str | None, entry_date: str | None) -> bool:
+    changed = _remove_filename_fields(root)
+    if employee_name is not None and entry_date is not None:
+        for container, text in ((f"{{{_W}}}p", f"{{{_W}}}t"),
+                                (f"{{{_S}}}si", f"{{{_S}}}t"),
+                                (f"{{{_S}}}is", f"{{{_S}}}t"),
+                                (f"{{{_A}}}p", f"{{{_A}}}t")):
+            for nodes in _grouped_text_nodes(root, container, text):
+                changed |= _replace_in_text_nodes(nodes, employee_name, entry_date)
     for name in _SHEET_HEADERS:
         for node in root.iter(f"{{{_S}}}{name}"):
-            changed |= _replace_in_text_nodes([node], employee_name, entry_date)
+            changed |= _strip_sheet_name_code(node)
+            if employee_name is not None and entry_date is not None:
+                changed |= _replace_in_text_nodes([node], employee_name, entry_date)
     return changed
 
 
@@ -123,10 +175,14 @@ def replace_docx_placeholders(document, employee_name: str, entry_date: str) -> 
             _replace_in_xml_root(part.element, employee_name, entry_date)
 
 
-def fill_office_placeholders(path: Path, employee_name: str, entry_date: str) -> bool:
-    """Sostituisce i segnaposto in un .docx/.xlsx modificando solo l'XML del testo.
-    Tutte le altre parti del file (immagini, intestazioni, forme, stili) vengono
-    copiate byte per byte. Ritorna True se il file e' stato modificato."""
+def fill_office_placeholders(
+    path: Path, employee_name: str | None = None, entry_date: str | None = None
+) -> bool:
+    """Prepara un .docx/.xlsx per il dossier modificando solo l'XML del testo:
+    sostituisce i segnaposto (se nome e data sono dati) e toglie nome del file e del
+    foglio dalle intestazioni/pie' di pagina (campi FILENAME di Word, &F/&A di Excel). Tutte le altre parti del file
+    (immagini, intestazioni, forme, stili) vengono copiate byte per byte.
+    Ritorna True se il file e' stato modificato."""
     from lxml import etree
 
     pattern = _WORD_PART if path.suffix.lower() == ".docx" else _SHEET_PART
@@ -134,7 +190,8 @@ def fill_office_placeholders(path: Path, employee_name: str, entry_date: str) ->
         entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
     changed: dict[str, bytes] = {}
     for info, data in entries:
-        if not pattern.fullmatch(info.filename) or b"*" not in data:
+        markers = (b"*", b"&amp;A", b"&amp;F", b"FILENAME")
+        if not pattern.fullmatch(info.filename) or not any(m in data for m in markers):
             continue
         root = etree.fromstring(data, etree.XMLParser(resolve_entities=False, huge_tree=True))
         if _replace_in_xml_root(root, employee_name, entry_date):

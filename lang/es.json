@@ -250,5 +250,10 @@
   "st_open_log": "Abrir registro de errores",
   "up_install": "Actualizar ahora",
   "up_downloading": "Descargando la versión {version}… Formazioni PZZ se cerrará y se abrirá actualizado.",
-  "up_failed": "La actualización automática no se ha completado: {e}"
+  "up_failed": "La actualización automática no se ha completado: {e}",
+  "bat_scope_same": "☑ Las marcas se aplican a las {n} personas de la lista (departamento {d}).",
+  "bat_scope_mixed": "☑ Las marcas se aplican a las {n} personas de la lista. Atención: son de departamentos distintos.",
+  "bat_mixed_title": "Departamento distinto",
+  "bat_mixed_body": "La lista contiene personas del departamento {d}, {name} es de {new}.\n\nLos documentos marcados valen para toda la lista: para elegir qué documentos generar, las personas deben ser del mismo departamento.\n\n¿Añadir de todos modos?",
+  "bat_mixed_many": "varios departamentos"
 }
