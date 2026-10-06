@@ -2,6 +2,17 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## 2.6.0
+
+**Per chi usa l'app**
+- **Generazione più rapida con Microsoft Office**: Word ed Excel restano aperti in background tra una generazione e l'altra (si chiudono da soli dopo 10 minuti di inattività o alla chiusura del programma) e lavorano in parallelo sui moduli Word ed Excel dello stesso dossier. Partono già mentre si scrive il nome o si importa un elenco, così al clic su "Genera" sono pronti. L'export in PDF salta i passaggi inutili (tag di struttura, segnalibri, controllo ortografico, macro).
+- Se Word o Excel non si avviano, l'app ripiega subito sul motore interno, senza riprovare a ogni dossier.
+
+**Antivirus**
+- Gli exe non sono più compressi con UPX e riportano nome del prodotto, editore e versione (Proprietà > Dettagli): due motivi frequenti di falsi positivi.
+- Il bootloader di PyInstaller viene compilato a ogni build invece di usare quello precompilato, condiviso con molti programmi malevoli e quindi riconosciuto dagli antivirus.
+- L'installer non avvia più PowerShell (con `-ExecutionPolicy Bypass`) per creare i collegamenti: usa direttamente le API di Windows.
+
 ## 2.5.0
 
 **Per chi usa l'app**

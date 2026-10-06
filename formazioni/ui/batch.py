@@ -185,6 +185,7 @@ class BatchMixin:
             tree.insert("", END, values=(nome, data, reparto))
         self._refresh_inline_batch_count()
         self._show_batch_department()
+        self.warm_up_office()
         self._toast(self.tr("dd_imported", n=len(self._inline_batch_rows) - before,
                             name=Path(p).name), "success")
 
