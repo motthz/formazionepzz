@@ -11,7 +11,6 @@ import shutil
 import tempfile
 import traceback
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
@@ -25,7 +24,13 @@ from reportlab.lib.units import mm
 if TYPE_CHECKING:
     from reportlab.platypus import Paragraph, Table
 from .config import APP_VERSION
-from .documents import Document, load_workbook, replace_docx_placeholders, replace_placeholders
+from .documents import (
+    Document,
+    fill_office_placeholders,
+    load_workbook,
+    replace_docx_placeholders,
+    replace_placeholders,
+)
 from .office import (
     _convert_with_office_batch,
     _merge_pdfs,
@@ -105,7 +110,8 @@ def _cached_pdf_path(template: Path) -> Path | None:
     if not digest:
         return None
     engine = re.sub(r"[^a-z]", "", (_office_command() or "none").lower())
-    return _pdf_cache_dir() / f"{digest}-{engine}.pdf"
+    # "-v2": PDF senza nome del file/foglio; quelli in cache di prima non valgono piu'
+    return _pdf_cache_dir() / f"{digest}-{engine}-v2.pdf"
 
 
 def _store_cached_pdf(template: Path, pdf: Path) -> Path:
@@ -161,6 +167,8 @@ def _build_native_jobs(jobs: list[DossierJob], progress_cb=None) -> list[Excepti
                             else:
                                 copy = temp_dir / f"{next(names)}-{template_path.name}"
                                 shutil.copy2(template_path, copy)
+                                if copy.suffix.lower() in {".docx", ".xlsx"}:
+                                    fill_office_placeholders(copy)  # solo nome di file/foglio
                                 static_sources[template_path] = copy
                     else:
                         prepared = _prepare_office_template(
@@ -195,21 +203,12 @@ def _build_native_jobs(jobs: list[DossierJob], progress_cb=None) -> list[Excepti
                 tick()
                 continue
             try:
-                expanded = job.expanded()
-                # Stessa regola del motore ReportLab: niente copertina se ci sono PDF orizzontali
-                has_landscape_pdf = any(
-                    template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
-                    for template, _ in expanded
-                )
-                cover = [] if has_landscape_pdf else [_build_cover_pdf(
-                    temp_dir / f"cover-{index}.pdf", job.employee_name, job.entry_date,
-                    job.department, job.role, job.notes,
-                )]
-                pages = cover + [
+                # Il dossier contiene solo i moduli, senza pagina introduttiva
+                pages = [
                     trimmed(template.path) if template.path.suffix.lower() == ".pdf"
                     else ready.get(template.path)
                     or trimmed(converted[personal[(index, template.path)]])
-                    for template, _copy_number in expanded
+                    for template, _copy_number in job.expanded()
                 ]
                 job.output_path.parent.mkdir(parents=True, exist_ok=True)
                 _merge_pdfs(job.output_path, pages)
@@ -328,7 +327,7 @@ def xlsx_story(
     entry_date: str,
     styles: dict[str, ParagraphStyle],
 ) -> list[object]:
-    from reportlab.platypus import Paragraph, Spacer
+    from reportlab.platypus import Spacer
 
     workbook = load_workbook(path, data_only=False, read_only=False)
     story: list[object] = []
@@ -350,8 +349,7 @@ def xlsx_story(
                         [paragraph_text(value, styles["table"]) for value in values]
                     )
             if rows:
-                story.append(Paragraph(escape(sheet.title), styles["subheading"]))
-                story.append(Spacer(1, 2 * mm))
+                # Senza il nome del foglio: nel dossier compare solo il contenuto
                 story.append(_table_flowable(rows, raw_rows))
                 story.append(Spacer(1, 5 * mm))
     finally:
@@ -451,67 +449,6 @@ def pdf_story(
         if idx < len(reader.pages):
             story.append(PageBreak())
     return story or [paragraph_text("Documento PDF senza contenuto testuale.", styles["muted"])]
-
-
-def _cover_story(
-    styles: dict[str, ParagraphStyle],
-    employee_name: str,
-    entry_date: str,
-    department: str,
-    role: str,
-    notes: str,
-) -> list[object]:
-    from reportlab.platypus import Spacer
-
-    cover_rows_raw = [
-        ["Campo", "Valore"],
-        ["Nome e Cognome", employee_name],
-        ["Data Ingresso / Corso", entry_date],
-        ["Reparto/i", department],
-    ]
-    if role and role.strip():
-        cover_rows_raw.append(["Mansione / Ruolo", role.strip()])
-    if notes and notes.strip():
-        cover_rows_raw.append(["Note aggiuntive", notes.strip()])
-    cover_rows = [
-        [paragraph_text(str(c), styles["body"] if i else styles["meta"])
-         for i, c in enumerate(rr)]
-        for rr in cover_rows_raw
-    ]
-    return [
-        Spacer(1, 12 * mm),
-        paragraph_text("Dossier Formazione", styles["cover_title"]),
-        paragraph_text("Documento di accompagnamento per la formazione individuale",
-                       styles["cover_subtitle"]),
-        Spacer(1, 8 * mm),
-        _table_flowable(cover_rows, cover_rows_raw),
-        Spacer(1, 8 * mm),
-        paragraph_text(
-            "Generato da Formazioni PZZ il: " + datetime.now().strftime("%d/%m/%Y %H:%M"),
-            styles["small"],
-        ),
-    ]
-
-
-def _build_cover_pdf(
-    output_path: Path,
-    employee_name: str,
-    entry_date: str,
-    department: str,
-    role: str,
-    notes: str,
-) -> Path:
-    from reportlab.platypus import SimpleDocTemplate
-
-    doc = SimpleDocTemplate(
-        str(output_path),
-        pagesize=A4,
-        rightMargin=14 * mm, leftMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm,
-        title=f"Dossier formazione - {employee_name}",
-        author="Formazioni PZZ",
-    )
-    doc.build(_cover_story(make_styles(), employee_name, entry_date, department, role, notes))
-    return output_path
 
 
 def _watermark_page(text: str, width: float, height: float):
@@ -751,10 +688,6 @@ def _build_pdf_content(
         author="Formazioni PZZ",
     )
     story: list[object] = []
-    # Copertina solo in portrait: con PDF landscape si conserva l'impaginazione originale
-    if not has_landscape_pdf:
-        story.extend(_cover_story(styles, employee_name, entry_date, department, role, notes))
-        story.append(PageBreak())
     story_cache_local: dict[Path, list[object]] = {}
     total_steps = max(1, len(expanded) + 1)
 

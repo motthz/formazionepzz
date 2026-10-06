@@ -185,3 +185,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_dossier_without_cover_page(tmp: Path) -> None:
+    selected = [replace(t, copies=1) for t in _templates()]
+    out = tmp / "senza_copertina.pdf"
+    app.build_pdf(out, "Mario Rossi", "01/10/2026", "SICUREZZA", "", "", selected)
+    text = " ".join(page.extract_text() or "" for page in PdfReader(str(out)).pages)
+    assert "Dossier Formazione" not in text
+    assert "Documento di accompagnamento" not in text

@@ -100,3 +100,70 @@ def test_file_without_placeholders_is_untouched(tmp: Path) -> None:
     before = source.read_bytes()
     assert not fill_office_placeholders(source, "Mario Rossi", "01/09/2026")
     assert source.read_bytes() == before
+
+
+def test_excel_sheet_name_removed_from_header_footer(tmp: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Registro interno"
+    sheet["A1"] = "Contenuto fisso"
+    sheet.oddFooter.center.text = "&A"
+    sheet.oddFooter.right.text = "Pagina &P - R&&D"
+    sheet.oddHeader.left.text = "Scheda di *nome* (&A)"
+    source = tmp / "TUTTI_1_REG.xlsx"
+    workbook.save(source)
+
+    assert fill_office_placeholders(source)  # senza nome e data: solo il nome del foglio
+    from openpyxl import load_workbook
+
+    result = load_workbook(source).active
+    assert not result.oddFooter.center.text
+    assert result.oddFooter.right.text == "Pagina &P - R&&D"
+    assert result.oddHeader.left.text == "Scheda di *nome* ()"
+    assert result["A1"].value == "Contenuto fisso"
+
+
+def _add_field(paragraph, code: str, shown: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def char(kind: str):
+        run = paragraph.add_run()
+        element = OxmlElement("w:fldChar")
+        element.set(qn("w:fldCharType"), kind)
+        run._r.append(element)
+
+    char("begin")
+    instr = OxmlElement("w:instrText")
+    instr.text = f" {code} "
+    paragraph.add_run()._r.append(instr)
+    char("separate")
+    paragraph.add_run(shown)
+    char("end")
+
+
+def test_word_filename_field_removed_from_footer(tmp: Path) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    document = Document()
+    document.add_paragraph("Corpo del modulo")
+    footer = document.sections[0].footer.paragraphs[0]
+    footer.add_run("Rev. 3 - ")
+    _add_field(footer, "FILENAME \\* MERGEFORMAT", "MAGAZZINO_2_MAG.docx")
+    footer.add_run(" - pag. ")
+    _add_field(footer, "PAGE", "1")
+    simple = OxmlElement("w:fldSimple")
+    simple.set(qn("w:instr"), " FILENAME \\p ")
+    footer._p.append(simple)
+    source = tmp / "MAGAZZINO_2_MAG.docx"
+    document.save(source)
+
+    assert fill_office_placeholders(source)
+
+    result = Document(str(source))
+    xml = result.sections[0].footer.paragraphs[0]._p.xml
+    assert "FILENAME" not in xml
+    assert "PAGE" in xml
+    assert result.sections[0].footer.paragraphs[0].text == "Rev. 3 -  - pag. 1"
+    assert result.paragraphs[0].text == "Corpo del modulo"

@@ -1107,6 +1107,12 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         # --- Progress + buttons ---
         prog_wrap = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
         prog_wrap.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        # Con persone nell'elenco batch: ricorda che le spunte valgono per tutte
+        self._batch_scope_label = tk.Label(
+            prog_wrap, text="", bg=self._style_colors["card_body_bg"],
+            fg=self._style_colors["focus"], font=("Segoe UI Semibold", 9),
+            anchor="w", justify="left")
+        self._fluid_wrap(self._batch_scope_label)
         self._progressbar = ttk.Progressbar(prog_wrap, orient="horizontal",
                                              mode="determinate", maximum=100, value=0)
         self._progressbar.pack(fill=X, side="top")

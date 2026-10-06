@@ -52,6 +52,7 @@ class BatchMixin:
                 empty.place_forget()
             else:
                 empty.place(relx=0.5, rely=0.55, anchor="center")
+        self._refresh_batch_scope_hint()
         run_btn = getattr(self, "_inline_batch_run_btn", None)
         # Dopo un cambio di tema/lingua il riferimento puo' puntare al pulsante distrutto
         if run_btn is not None and run_btn.winfo_exists():
@@ -59,6 +60,39 @@ class BatchMixin:
             if run_btn.cget("image"):
                 text = " " + strip_leading_symbol(text)
             run_btn.configure(text=text)
+
+    def _batch_common_department(self) -> str | None:
+        """Reparto comune a tutte le persone in elenco, oppure None se sono diversi."""
+        depts = {(r.get("Reparto") or "").strip().upper()
+                 for r in getattr(self, "_inline_batch_rows", [])}
+        return next(iter(depts)) if len(depts) == 1 else None
+
+    def _refresh_batch_scope_hint(self):
+        """Le spunte dei documenti valgono per tutte le persone dell'elenco: lo si dice
+        sotto la lista dei documenti, con il reparto se e' lo stesso per tutti."""
+        label = getattr(self, "_batch_scope_label", None)
+        if label is None or not label.winfo_exists():
+            return
+        n = len(getattr(self, "_inline_batch_rows", []))
+        if not n:
+            label.pack_forget()
+            return
+        dept = self._batch_common_department()
+        text = (self.tr("bat_scope_same", n=n, d=dept) if dept
+                else self.tr("bat_scope_mixed", n=n))
+        label.configure(text=text)
+        if not label.winfo_manager():
+            label.pack(fill="x", side="top", pady=(0, 6), before=self._progressbar)
+
+    def _show_batch_department(self):
+        """Se tutte le persone sono di un solo reparto, la lista mostra quel reparto:
+        cosi' si spuntano proprio i documenti che riceveranno."""
+        dept = self._batch_common_department()
+        if not dept or "+" in dept or self.multi_dept_mode.get():
+            return
+        if dept in tuple(self.department_combo["values"]) and self.department.get().upper() != dept:
+            self.department.set(dept)
+            self.update_document_list()
 
     def _current_dept_for_batch(self) -> str:
         depts = self._current_departments()
@@ -81,6 +115,15 @@ class BatchMixin:
             messagebox.showwarning(self.tr("mb_no_docs_title"), self.tr("mb_no_docs_body"))
             return
         dept_str = "+".join(depts)
+        common = self._batch_common_department()
+        if self._inline_batch_rows and common != dept_str:
+            # Le spunte sono uniche per tutto l'elenco: reparti diversi ricevono
+            # documenti diversi, quindi si chiede conferma.
+            if not messagebox.askyesno(
+                    self.tr("bat_mixed_title"),
+                    self.tr("bat_mixed_body", name=name, new=dept_str,
+                            d=common or self.tr("bat_mixed_many"))):
+                return
         row = {"Nome": name, "Data": entry_date, "Reparto": dept_str}
         self._inline_batch_rows.append(row)
         tree = self._inline_batch_tree
@@ -141,6 +184,7 @@ class BatchMixin:
             self._inline_batch_rows.append(row)
             tree.insert("", END, values=(nome, data, reparto))
         self._refresh_inline_batch_count()
+        self._show_batch_department()
         self._toast(self.tr("dd_imported", n=len(self._inline_batch_rows) - before,
                             name=Path(p).name), "success")
 
