@@ -50,6 +50,17 @@ jobs:
       - name: Installa le dipendenze
         run: python -m pip install -r requirements.txt
 
+      # Il bootloader precompilato di PyInstaller e' identico in migliaia di programmi,
+      # anche malevoli: gli antivirus lo riconoscono e bloccano l'exe. Compilato qui
+      # (con Visual Studio del runner) e' unico per questo progetto.
+      - name: Compila il bootloader di PyInstaller
+        shell: pwsh
+        env:
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: |
+          $version = (Select-String requirements.txt -Pattern '^pyinstaller==(\S+)').Matches[0].Groups[1].Value
+          python -m pip install --force-reinstall --no-deps --no-cache-dir --no-binary pyinstaller "pyinstaller==$version"
+
       - name: Build exe portatile
         run: python -m PyInstaller --clean --noconfirm FormazioniPZZ.spec
 
@@ -62,6 +73,15 @@ jobs:
       - name: Prova degli exe (avvio e installazione)
         shell: pwsh
         run: |
+          # Informazioni di versione (Proprieta' > Dettagli) presenti in tutti gli exe
+          $version = (Get-Content release/version.json -Raw | ConvertFrom-Json).version
+          foreach ($exe in "dist/FormazioniPZZ.exe", "dist/FormazioniPZZ_app/FormazioniPZZ.exe", "dist/FormazioniPZZ_Setup.exe") {
+            $info = (Get-Item $exe).VersionInfo
+            if ($info.ProductName -ne "Formazioni PZZ" -or $info.ProductVersion -notlike "$version*") {
+              throw "Informazioni di versione mancanti in $exe"
+            }
+          }
+
           # L'app deve restare aperta: se si chiude subito c'e' un errore all'avvio
           $app = Start-Process "dist/FormazioniPZZ_app/FormazioniPZZ.exe" -PassThru
           Start-Sleep -Seconds 20

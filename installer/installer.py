@@ -66,30 +66,48 @@ def resource(name: str) -> Path:
 
 # ------------------------------ Windows helpers ------------------------------
 
-def _powershell(script: str) -> str:
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True, text=True, creationflags=NO_WINDOW,
-    )
-    if out.returncode != 0:
-        raise RuntimeError(out.stderr.strip() or "PowerShell error")
-    return out.stdout.strip()
+# Cartelle e collegamenti con le API di Windows, non con PowerShell: un installer
+# che lancia PowerShell con "-ExecutionPolicy Bypass" viene bloccato dagli antivirus.
+_KNOWN_FOLDERS = {
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Programs": "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}",  # menu Start
+}
 
 
 def special_folder(name: str) -> Path:
     """'Desktop' o 'Programs' (menu Start); gestisce il desktop spostato su OneDrive."""
-    return Path(_powershell(f"[Environment]::GetFolderPath('{name}')"))
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    folder_id = GUID()
+    ctypes.oledll.ole32.CLSIDFromString(_KNOWN_FOLDERS[name], ctypes.byref(folder_id))
+    path = ctypes.c_wchar_p()
+    ctypes.oledll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(path))
+    try:
+        return Path(path.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(path)
 
 
 def create_shortcut(lnk: Path, target: Path, icon: Path) -> None:
-    def q(p: Path) -> str:
-        return str(p).replace("'", "''")
-    _powershell(
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('%s');"
-        "$s.TargetPath = '%s'; $s.WorkingDirectory = '%s';"
-        "$s.IconLocation = '%s,0'; $s.Description = '%s'; $s.Save()"
-        % (q(lnk), q(target), q(target.parent), q(icon), APP_NAME)
-    )
+    import pythoncom
+    from win32com.shell import shell
+
+    pythoncom.CoInitialize()  # l'installazione gira in un thread a parte
+    try:
+        link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
+                                          pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+        link.SetPath(str(target))
+        link.SetWorkingDirectory(str(target.parent))
+        link.SetIconLocation(str(icon), 0)
+        link.SetDescription(APP_NAME)
+        link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(lnk), 0)
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def shortcut_paths() -> list[Path]:

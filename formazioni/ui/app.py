@@ -6,6 +6,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import traceback
 from dataclasses import replace as dc_replace
 from datetime import date, datetime
@@ -29,6 +30,7 @@ from ..config import (
 )
 from ..icons import BUTTON_ICONS, strip_leading_symbol
 from ..logs import setup_error_log
+from ..office import warm_up_office
 from ..pdf import build_pdf
 from ..system import (
     _build_in_memory_icon,
@@ -125,6 +127,8 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self._install_drain_loop()
         self.root.bind("<Configure>", self._on_root_resize)
         self.refresh_templates()
+        self._office_warmed_at = 0.0
+        self.employee_name.trace_add("write", lambda *_a: self.warm_up_office())
         self._bind_shortcuts()
         self._install_file_drop()
         self.root.after(SYSTEM_THEME_POLL_MS, self._follow_system_theme)
@@ -1445,6 +1449,18 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         if chosen:
             self.output_dir.set(chosen)
             self._persist_settings()
+
+    def warm_up_office(self) -> None:
+        """Avvia Word/Excel in background mentre si compila il modulo: alla
+        generazione sono gia' aperti. Al piu' una richiesta ogni 30 secondi."""
+        now = time.monotonic()
+        if now - self._office_warmed_at < 30 or not self.templates:
+            return
+        self._office_warmed_at = now
+        try:
+            warm_up_office({t.path.suffix for t in self.templates})
+        except Exception:  # noqa: BLE001 - solo un'ottimizzazione
+            traceback.print_exc()
 
     # ---------------------- Refresh templates -----------------------------
     def refresh_templates(self) -> None:

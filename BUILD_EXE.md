@@ -44,6 +44,21 @@ python -m PyInstaller --noconfirm installer/installer.spec
 
 I file finiti sono `dist/FormazioniPZZ.exe` e `dist/FormazioniPZZ_Setup.exe`. Non vanno salvati nel repository: si pubblicano come allegati di una Release GitHub. Il workflow lo fa da solo quando si invia un tag `vX.Y.Z`; i passaggi sono in CONTRIBUTING.md, sezione "Pubblicare una versione".
 
+### Antivirus
+
+Gli exe di PyInstaller vengono spesso scambiati per malware. Per ridurre i falsi positivi:
+
+- i file `.spec` non usano UPX (`upx=False`) e aggiungono nome, editore e versione dell'exe (`tools/versione_exe.py`, versione letta da `release/version.json`);
+- il workflow compila il bootloader di PyInstaller a ogni build (`PYINSTALLER_COMPILE_BOOTLOADER=1`) invece di usare quello precompilato. In locale serve Visual Studio con gli strumenti C++:
+
+```bash
+set PYINSTALLER_COMPILE_BOOTLOADER=1
+pip install --force-reinstall --no-deps --no-cache-dir --no-binary pyinstaller pyinstaller==6.22.2
+```
+
+- l'exe portatile (un solo file, si estrae in una cartella temporanea a ogni avvio) è quello segnalato più spesso: per gli utenti è preferibile l'installer;
+- se un antivirus blocca comunque una versione, l'exe si può inviare come falso positivo (per Microsoft Defender: <https://www.microsoft.com/wdsi/filesubmission>). La soluzione definitiva è firmare gli exe con un certificato di firma del codice.
+
 ---
 
 ## Note sulle Ottimizzazioni

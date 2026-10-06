@@ -5,6 +5,12 @@
 # Risultato: dist/FormazioniPZZ_app/FormazioniPZZ.exe (+ _internal)
 
 import os
+import sys
+
+# Niente compressione UPX e informazioni di versione nell'exe: gli exe compressi
+# e anonimi sono quelli che gli antivirus segnalano piu' spesso come sospetti.
+sys.path.insert(0, os.path.join(SPECPATH, 'tools'))
+from versione_exe import version_resource  # noqa: E402
 _lang_files = [
     (os.path.join('lang', f), os.path.join('lang'))
     for f in os.listdir('lang') if f.lower().endswith('.json')
@@ -40,13 +46,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version=version_resource('Formazioni PZZ', 'FormazioniPZZ.exe'),
     icon=os.path.join('assets', 'app_icon.ico'),
 )
 coll = COLLECT(
@@ -54,7 +61,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='FormazioniPZZ_app',
 )

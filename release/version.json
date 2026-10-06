@@ -1,4 +1,4 @@
 {
-  "version": "2.5.0",
-  "notes": "Dossier senza pagina introduttiva e senza nome del file/foglio in fondo alla pagina. Con più persone in elenco si vede chiaramente quali documenti ricevono."
+  "version": "2.6.0",
+  "notes": "Generazione dei dossier più rapida con Word ed Excel (restano aperti in background e lavorano in parallelo) e meno blocchi da parte degli antivirus."
 }
