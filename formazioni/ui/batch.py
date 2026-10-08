@@ -15,11 +15,14 @@ from ..icons import strip_leading_symbol
 from ..pdf import DossierJob, build_pdfs
 from ..system import open_folder
 from ..templates import (
+    apply_order,
     compute_template_hash,
     department_options,
+    order_for_department,
     safe_file_part,
     save_hashes,
     templates_for_departments,
+    templates_from_saved_order,
 )
 from ..tkcompat import END, StringVar, filedialog, messagebox
 
@@ -92,7 +95,7 @@ class BatchMixin:
             return
         if dept in tuple(self.department_combo["values"]) and self.department.get().upper() != dept:
             self.department.set(dept)
-            self.update_document_list()
+            self._on_department_changed()
 
     def _current_dept_for_batch(self) -> str:
         depts = self._current_departments()
@@ -216,6 +219,13 @@ class BatchMixin:
 
         tpl_snap = list(self.templates)
         inc_snap = dict(self.template_inclusion)
+        # La lista a video vale per le persone dei reparti mostrati; le altre ricevono
+        # l'ordine salvato per il loro reparto, se c'e', altrimenti le stesse spunte.
+        folder = self._template_folder()
+        order_snap = list(self.doc_order)
+        modules_snap = {"orders": {k: dict(v) for k, v in
+                                   self.module_settings.get("orders", {}).items()}}
+        ui_depts = self._current_departments()
         saved_snap = dict(self.saved_hashes) if self.saved_hashes else {}
         dept_opts = {d.upper() for d in department_options(tpl_snap)}
         out_dir_path = Path(self.output_dir.get()).expanduser()
@@ -259,7 +269,14 @@ class BatchMixin:
                         details.append(s_tr("bat_skip_dept", i=idx, d=", ".join(invalid_depts)))
                         continue
                     sel = templates_for_departments(tpl_snap, reparto_list)
-                    filt = [t for t in sel if inc_snap.get(t.path, True)]
+                    linked = (order_for_department(modules_snap, reparto_list[0])
+                              if len(reparto_list) == 1 and reparto_list != ui_depts else None)
+                    if linked:
+                        filt = templates_from_saved_order(
+                            sel, modules_snap["orders"][linked], folder)
+                    else:
+                        filt = [t for t in apply_order(sel, order_snap, folder)
+                                if inc_snap.get(t.path, True)]
                     if not filt:
                         skip += 1
                         for d in reparto_list:

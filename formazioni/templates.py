@@ -261,3 +261,92 @@ def move_template_to_trash(path: Path, folder: Path) -> Path:
 def safe_file_part(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9À-ÿ_-]+", "-", value.strip())
     return cleaned.strip("-_") or "persona"
+
+
+# --------------------------- NOMI E ORDINI --------------------------------
+
+# Nomi dei moduli mostrati solo nell'app e ordini dei documenti salvati come
+# modelli: stanno nella cartella template, cosi' chi la condivide in rete li vede.
+MODULE_SETTINGS_NAME = "_nomi_e_ordini.json"
+
+
+def template_key(path: Path, folder: Path) -> str:
+    """Chiave stabile di un modulo: percorso relativo alla cartella template."""
+    try:
+        return path.relative_to(folder).as_posix()
+    except ValueError:
+        return path.name
+
+
+def load_module_settings(folder: Path) -> dict[str, Any]:
+    data: dict[str, Any] = {"labels": {}, "orders": {}}
+    try:
+        raw = json.loads((folder / MODULE_SETTINGS_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return data
+    if not isinstance(raw, dict):
+        return data
+    labels = raw.get("labels")
+    if isinstance(labels, dict):
+        data["labels"] = {str(k): str(v).strip() for k, v in labels.items() if str(v).strip()}
+    orders = raw.get("orders")
+    if isinstance(orders, dict):
+        for name, entry in orders.items():
+            if not isinstance(entry, dict):
+                continue
+            data["orders"][str(name)] = {
+                "order": [str(k) for k in entry.get("order") or [] if isinstance(k, str)],
+                "excluded": [str(k) for k in entry.get("excluded") or [] if isinstance(k, str)],
+                "department": str(entry.get("department") or "").strip().upper(),
+            }
+    return data
+
+
+def save_module_settings(folder: Path, data: dict[str, Any]) -> None:
+    """Scrive nomi e ordini; solleva OSError se la cartella non e' scrivibile."""
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / MODULE_SETTINGS_NAME
+    temp = target.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(target)
+
+
+def apply_order(templates: list[TemplateFile], order: list[str],
+                folder: Path) -> list[TemplateFile]:
+    """Mette prima i moduli nell'ordine indicato; gli altri restano in coda
+    nell'ordine di partenza (per esempio i moduli aggiunti dopo aver salvato)."""
+    if not order:
+        return list(templates)
+    position = {key: i for i, key in enumerate(order)}
+    tail = len(position)
+    return sorted(templates,
+                  key=lambda t: position.get(template_key(t.path, folder), tail))
+
+
+def order_for_department(data: dict[str, Any], department: str) -> str | None:
+    """Nome dell'ordine salvato collegato al reparto, se c'e'."""
+    wanted = department.strip().upper()
+    if not wanted:
+        return None
+    for name, entry in data.get("orders", {}).items():
+        if entry.get("department") == wanted:
+            return name
+    return None
+
+
+def rename_template_key(data: dict[str, Any], old: str, new: str) -> None:
+    """Dopo aver rinominato un modulo, nome e posizione negli ordini lo seguono."""
+    labels = data.setdefault("labels", {})
+    if old in labels:
+        labels[new] = labels.pop(old)
+    for entry in data.get("orders", {}).values():
+        for field in ("order", "excluded"):
+            entry[field] = [new if key == old else key for key in entry.get(field, [])]
+
+
+def templates_from_saved_order(templates: list[TemplateFile], entry: dict[str, Any],
+                               folder: Path) -> list[TemplateFile]:
+    """Moduli di un dossier secondo un ordine salvato: in quell'ordine e senza gli esclusi."""
+    excluded = set(entry.get("excluded", []))
+    return [t for t in apply_order(templates, entry.get("order", []), folder)
+            if template_key(t.path, folder) not in excluded]

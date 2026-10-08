@@ -1,4 +1,4 @@
 {
-  "version": "2.6.0",
-  "notes": "Generazione dei dossier più rapida con Word ed Excel (restano aperti in background e lavorano in parallelo) e meno blocchi da parte degli antivirus."
+  "version": "2.7.0",
+  "notes": "Ordine dei documenti a scelta, salvabile come modello e collegabile a un reparto; nomi dei moduli visibili solo nell'app."
 }

@@ -44,10 +44,12 @@ from ..system import (
 )
 from ..templates import (
     TemplateFile,
+    apply_order,
     classify_template_hashes,
     compute_template_hash,
     department_options,
     discover_templates,
+    load_module_settings,
     load_saved_hashes,
     safe_file_part,
     save_hashes,
@@ -60,6 +62,7 @@ from .batch import BatchMixin
 from .dialogs import DialogsMixin
 from .feedback import FeedbackMixin
 from .history import HistoryMixin
+from .ordering import OrderingMixin
 from .settings import SettingsMixin
 
 try:
@@ -68,7 +71,7 @@ except ImportError:  # senza Pillow resta lo stile base
     RoundedPanel = UiKit = None  # type: ignore[assignment]
 
 
-class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, FeedbackMixin):
+class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, FeedbackMixin):
     def __init__(self, root: tk.Tk) -> None:
         if tk is None or ttk is None:
             raise RuntimeError(
@@ -102,6 +105,11 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self.templates: list[TemplateFile] = []
         self.ignored: list[Path] = []
         self.template_inclusion: dict[Path, bool] = {}
+        # Nomi in app e ordini salvati (file nella cartella template); doc_order e'
+        # l'ordine attuale della lista, active_order il nome dell'ordine applicato.
+        self.module_settings: dict[str, Any] = {"labels": {}, "orders": {}}
+        self.doc_order: list[str] = []
+        self.active_order = StringVar()
         self.multi_dept_values: dict[str, BooleanVar] = {}
         self._tooltips: list[Tooltip] = []
         self._queue: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -1035,7 +1043,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
             font=("Segoe UI Semibold", 10, "bold"), height=14,
         )
         self.department_combo.grid(row=0, column=0, sticky="ew")
-        self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_document_list())
+        self.department_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_department_changed())
         self._single_dept_wrap = single_wrap
         self._register_local_wheel(self.department_combo)
         multi_wrap = tk.Frame(dept_frame, bg=self._style_colors["card_body_bg"])
@@ -1051,9 +1059,11 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
 
         self._add_tooltip(self.department_combo, lambda: self.tr("tt_dept"))
 
+        self._build_order_row(prev_body, row=1)
+
         # --- Badge count + select all/none ---
         badge_row = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
-        badge_row.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        badge_row.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(badge_row, textvariable=self.count_label, style="Count.TLabel").pack(side=LEFT)
         right_badges = tk.Frame(badge_row, bg=self._style_colors["card_body_bg"])
         right_badges.pack(side=RIGHT)
@@ -1070,17 +1080,17 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
 
         # --- Treeview with checkboxes ---
         tree_wrap = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
-        tree_wrap.grid(row=2, column=0, sticky="nsew", pady=(0, 4))
+        tree_wrap.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
         tree_wrap.rowconfigure(0, weight=1)
         tree_wrap.columnconfigure(0, weight=1)
-        prev_body.rowconfigure(2, weight=1)
+        prev_body.rowconfigure(3, weight=1)
 
         self.tree = ttk.Treeview(
             tree_wrap,
             columns=("include", "documento", "copie", "stato"),
             show="headings",
             height=10,
-            selectmode="none",
+            selectmode="browse",
         )
         self.tree.heading("include", text=self.tr("col_include"))
         self.tree.heading("documento", text=self.tr("col_document"))
@@ -1098,7 +1108,9 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self._register_local_wheel(self.tree)
 
         self.tree.bind("<space>", lambda _e: self._toggle_focused_row())
+        self._bind_tree_ordering()
         self._add_tooltip(self.tree, lambda: self.tr("tt_include"))
+        self._build_order_tools(prev_body, row=4)
 
         # --- Colors hash status tags ---
         colors = self._style_colors
@@ -1110,7 +1122,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
 
         # --- Progress + buttons ---
         prog_wrap = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
-        prog_wrap.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        prog_wrap.grid(row=5, column=0, sticky="ew", pady=(4, 0))
         # Con persone nell'elenco batch: ricorda che le spunte valgono per tutte
         self._batch_scope_label = tk.Label(
             prog_wrap, text="", bg=self._style_colors["card_body_bg"],
@@ -1124,7 +1136,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                   ).pack(anchor="w", side="top", pady=(4, 0))
 
         gen_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
-        gen_frame.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        gen_frame.grid(row=6, column=0, sticky="ew", pady=(14, 0))
         gen_buttons = tk.Frame(gen_frame, bg=self._style_colors["card_body_bg"])
         gen_buttons.pack(fill=X)
         gen_btn = self._button(gen_buttons, "btn_generate",
@@ -1141,7 +1153,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         self._add_tooltip(gen_btn, lambda: self.tr("tt_generate") + "  (Ctrl+G)")
 
         help_frame = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
-        help_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        help_frame.grid(row=7, column=0, sticky="ew", pady=(14, 0))
         tk.Frame(help_frame, bg=self._style_colors["count_bg"], width=4).pack(side=LEFT, fill="y")
         tip = tk.Label(
             help_frame, text=self.tr("help_tip_body"),
@@ -1238,15 +1250,24 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         depts = self._current_departments()
         if not depts:
             return []
+        return [t for t in self._listed_templates()
+                if self.template_inclusion.get(t.path, True)]
+
+    def _listed_templates(self) -> list[TemplateFile]:
+        """Moduli dei reparti scelti, nell'ordine della lista (anche quelli esclusi)."""
+        depts = self._current_departments()
+        if not depts:
+            return []
         if len(depts) == 1:
             chosen = templates_for_department(self.templates, depts[0])
         else:
             chosen = templates_for_departments(self.templates, depts)
-        return [t for t in chosen if self.template_inclusion.get(t.path, True)]
+        return apply_order(chosen, self.doc_order, self._template_folder())
 
     def _set_all_inclusion(self, value: bool):
         for path in list(self.template_inclusion.keys()):
             self.template_inclusion[path] = value
+        self._mark_order_changed()
         self.update_document_list()
 
     def _on_tree_click(self, event):
@@ -1275,6 +1296,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         if path is None:
             return
         self.template_inclusion[path] = not self.template_inclusion.get(path, True)
+        self._mark_order_changed()
         self.update_document_list()
 
     # ---------------------- Rotellina del mouse --------------------------
@@ -1464,12 +1486,19 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
 
     # ---------------------- Refresh templates -----------------------------
     def refresh_templates(self) -> None:
-        folder = Path(self.template_dir.get()).expanduser()
+        folder = self._template_folder()
         self.templates, self.ignored = discover_templates(folder)
+        if folder != getattr(self, "_module_settings_folder", None):
+            # Altra cartella: altri nomi e ordini, si riparte dall'ordine predefinito
+            self.module_settings = load_module_settings(folder)
+            self._module_settings_folder = folder
+            self.doc_order = []
+            self.active_order.set("")
         departments = department_options(self.templates)
         self.department_combo["values"] = departments
         if departments and self.department.get().upper() not in departments:
             self.department.set(departments[0])
+            self._apply_department_order()
         elif not departments:
             self.department.set("")
         if hasattr(self, "_multi_dept_wrap") and self._multi_dept_wrap is not None:
@@ -1482,6 +1511,7 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
         for s in stale:
             del self.template_inclusion[s]
         self.hash_status = classify_template_hashes(self.templates, self.saved_hashes)
+        self._refresh_order_choices()
         self.update_document_list()
         ok = sum(1 for v in self.hash_status.values() if v == "ok")
         mod = sum(1 for v in self.hash_status.values() if v == "modified")
@@ -1500,16 +1530,11 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
     def update_document_list(self) -> None:
         if not hasattr(self, "tree") or self.tree is None:
             return
+        keep = self._selected_tree_path()
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._row_path: dict[str, Path] = {}
-        depts = self._current_departments()
-        if len(depts) == 1:
-            selected = templates_for_department(self.templates, depts[0])
-        elif depts:
-            selected = templates_for_departments(self.templates, depts)
-        else:
-            selected = []
+        selected = self._listed_templates()
         total_copies = sum(template.copies for template in selected
                            if self.template_inclusion.get(template.path, True))
         total_templates = sum(1 for template in selected
@@ -1537,11 +1562,16 @@ class FormazioniApp(BatchMixin, HistoryMixin, SettingsMixin, DialogsMixin, Feedb
                 tags.append(status_key)
             item = self.tree.insert(
                 "", END,
-                values=(mark, f"  {scope} · {template.path.name}",
+                values=(mark, f"  {scope} · {self._template_label(template)}",
                         template.copies, status_text),
                 tags=tuple(tags),
             )
             self._row_path[item] = template.path
+            if template.path == keep:
+                # Dopo spunte e spostamenti resta selezionato lo stesso documento
+                self.tree.selection_set(item)
+                self.tree.focus(item)
+                self.tree.see(item)
 
     # ---------------------- Generate single -------------------------------
     def _collect_form(self, require_name: bool = True):
