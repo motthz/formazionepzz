@@ -85,11 +85,11 @@ class HistoryMixin:
         list_wrap.rowconfigure(0, weight=1)
         columns = ("ts", "name", "entry", "dept", "docs", "file")
         tree = ttk.Treeview(list_wrap, columns=columns, show="headings", selectmode="browse")
-        widths = {"ts": 130, "name": 200, "entry": 100, "dept": 170, "docs": 60, "file": 280}
+        widths = {"ts": 130, "name": 180, "entry": 100, "dept": 190, "docs": 60, "file": 300}
         for col in columns:
             tree.heading(col, text=self.tr(f"hi_col_{col}"))
             tree.column(col, width=widths[col], anchor="center" if col == "docs" else "w",
-                        stretch=col in ("name", "file"))
+                        stretch=col in ("name", "dept", "file"))
         tree.tag_configure("missing", foreground=colors["text_muted"])
         tree.tag_configure("even", background=colors["row_even"])
         tree.grid(row=0, column=0, sticky="nsew")
@@ -165,6 +165,10 @@ class HistoryMixin:
         def remove():
             entry = current()
             if entry is None:
+                return
+            if not messagebox.askyesno(self.tr("hi_title"),
+                                       self.tr("hi_confirm_remove", name=entry.get("name", "")),
+                                       parent=win):
                 return
             with self._history_lock:
                 history = [h for h in self._load_history() if h != entry]

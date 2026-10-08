@@ -11,6 +11,7 @@ from .config import ALL_DEPARTMENT_NAMES
 def write_batch_template(path: Path, departments: list[str], italian: bool = True) -> None:
     """Crea un file Excel pronto da compilare per la generazione multipla."""
     from openpyxl import Workbook
+    from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -22,7 +23,12 @@ def write_batch_template(path: Path, departments: list[str], italian: bool = Tru
     sheet.append(headers)
     example_dept = next((d for d in departments if d.upper() not in ALL_DEPARTMENT_NAMES),
                         departments[0] if departments else "TUTTI")
-    sheet.append(["Mario Rossi", date.today(), example_dept])
+    # L'esempio sta nei commenti delle intestazioni, non in una riga: una riga di
+    # esempio dimenticata nel file diventava un dossier in piu' nel batch.
+    examples = ("Mario Rossi", date.today().strftime("%d/%m/%Y"), example_dept)
+    label = "Esempio" if italian else "Example"
+    for cell, example in zip(sheet[1], examples):
+        cell.comment = Comment(f"{label}: {example}", "Formazioni PZZ")
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="0B2A3D")

@@ -1,4 +1,4 @@
 {
-  "version": "2.7.0",
-  "notes": "Ordine dei documenti a scelta, salvabile come modello e collegabile a un reparto; nomi dei moduli visibili solo nell'app."
+  "version": "2.7.1",
+  "notes": "Correzioni: finestra Gestisci reparti di nuovo completa, spunte multi-reparto conservate dopo la generazione, modello Excel senza riga di esempio, messaggi del batch più chiari."
 }

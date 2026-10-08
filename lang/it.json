@@ -289,5 +289,12 @@
   "lbl_title": "Nome in app",
   "lbl_prompt": "File: {file}\n\nNome che vedi solo nell'app per riconoscere il contenuto. Nel PDF non compare. Lascia vuoto per mostrare il nome del file.",
   "lbl_saved": "Nome del documento aggiornato.",
-  "tm_col_label": "Nome in app"
+  "tm_col_label": "Nome in app",
+  "bat_count_one": "  1 persona in elenco",
+  "bat_scope_same_one": "☑ Le spunte valgono per la persona in elenco (reparto {d}).",
+  "dd_imported_one": "1 persona importata da {name}.",
+  "dd_import_ignored": "Righe senza nome o data non importate: {n}.",
+  "bat_skip_nodept": "riga {i}: reparto mancante",
+  "hi_confirm_remove": "Rimuovere dallo storico la voce di {name}? Il PDF non viene cancellato.",
+  "up_err_missing": "origine non trovata: {path}"
 }

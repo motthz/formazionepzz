@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -70,16 +71,24 @@ def test_batch_template_roundtrip(tmp: Path) -> None:
     # Rilettura con lo stesso parser dell'import
     fake = app.FormazioniApp.__new__(app.FormazioniApp)
     fake.language = {}
+    # Nessuna riga di esempio da importare: l'esempio e' nei commenti delle intestazioni
+    assert app.FormazioniApp._parse_batch_file(fake, target) == []
+    wb = load_workbook(target)
+    assert "MAGAZZINO" in wb["Dipendenti"]["C1"].comment.text
+    # Compilato come farebbe l'utente, si rilegge con data e reparto
+    wb["Dipendenti"].append(["Mario Rossi", date(2026, 10, 1), "MAGAZZINO"])
+    wb.save(target)
+    wb.close()
     rows = app.FormazioniApp._parse_batch_file(fake, target)
-    assert len(rows) == 1, rows
-    assert rows[0]["Nome"] == "Mario Rossi"
-    assert rows[0]["Reparto"] == "MAGAZZINO"
-    assert len(rows[0]["Data"]) == 10 and rows[0]["Data"][2] == "/"
+    assert rows == [{"Nome": "Mario Rossi", "Data": "01/10/2026", "Reparto": "MAGAZZINO"}], rows
 
     english = tmp / "template_en.xlsx"
     app.write_batch_template(english, [], italian=False)
-    rows = app.FormazioniApp._parse_batch_file(fake, english)
-    assert set(rows[0]) >= {"Nome", "Data", "Reparto"}
+    wb = load_workbook(english)
+    headers = [c.value for c in wb.worksheets[0][1]]
+    wb.close()
+    assert [app.FormazioniApp._normalize_column_header(fake, h) for h in headers] == \
+        ["Nome", "Data", "Reparto"]
 
 
 def test_update_manifest(tmp: Path) -> None:

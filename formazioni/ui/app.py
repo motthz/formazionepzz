@@ -846,23 +846,42 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
 
         action_row = tk.Frame(src_body, bg=self._style_colors["card_body_bg"])
         action_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        refresh_btn = self._button(action_row, "btn_refresh",
+        # Due gruppi: a sinistra modelli/reparti/moduli, a destra storico/impostazioni.
+        # Se la finestra e' stretta il gruppo di destra va a capo invece di schiacciarsi.
+        left_group = tk.Frame(action_row, bg=self._style_colors["card_body_bg"])
+        left_group.pack(side=LEFT)
+        right_group = tk.Frame(action_row, bg=self._style_colors["card_body_bg"])
+        right_group.pack(side=RIGHT)
+
+        def fit_actions(evt):
+            stacked = evt.width < left_group.winfo_reqwidth() + right_group.winfo_reqwidth() + 20
+            if stacked == (right_group.pack_info().get("side") == "top"):
+                return
+            if stacked:
+                right_group.pack_configure(side="top", anchor="w", pady=(10, 0))
+                left_group.pack_configure(side="top", anchor="w")
+            else:
+                left_group.pack_configure(side=LEFT, anchor="center")
+                right_group.pack_configure(side=RIGHT, anchor="center", pady=0)
+
+        action_row.bind("<Configure>", fit_actions)
+        refresh_btn = self._button(left_group, "btn_refresh",
                                  style="Accent.TButton", command=self.refresh_templates)
         refresh_btn.pack(side=LEFT)
         self._add_tooltip(refresh_btn, lambda: self.tr("tt_refresh") + "  (F5)")
-        dept_btn = self._button(action_row, "btn_depts",
+        dept_btn = self._button(left_group, "btn_depts",
                               style="Secondary.TButton", command=self.open_department_editor)
         dept_btn.pack(side=LEFT, padx=(10, 0))
         self._add_tooltip(dept_btn, lambda: self.tr("tt_depts"))
-        modules_btn = self._button(action_row, "btn_modules",
+        modules_btn = self._button(left_group, "btn_modules",
                                  style="Secondary.TButton", command=self.open_template_manager)
         modules_btn.pack(side=LEFT, padx=(10, 0))
         self._add_tooltip(modules_btn, lambda: self.tr("tt_modules"))
-        settings_btn = self._button(action_row, "btn_settings",
+        settings_btn = self._button(right_group, "btn_settings",
                                   style="Secondary.TButton", command=self.open_settings)
         settings_btn.pack(side=RIGHT)
         self._add_tooltip(settings_btn, lambda: self.tr("tt_settings") + "  (Ctrl+,)")
-        history_btn = self._button(action_row, "btn_history",
+        history_btn = self._button(right_group, "btn_history",
                                  style="Secondary.TButton", command=self.open_history)
         history_btn.pack(side=RIGHT, padx=(0, 10))
         self._add_tooltip(history_btn, lambda: self.tr("tt_history") + "  (Ctrl+H)")
@@ -1030,10 +1049,10 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         multi_cb.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self._add_tooltip(multi_cb, lambda: self.tr("tt_multidept"))
 
-        tk.Label(dept_frame, text=self.tr("lbl_department"),
-                 bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
-                 font=("Segoe UI Semibold", 9, "bold"), anchor="w"
-                 ).grid(row=1, column=0, sticky="w", padx=(0, 14), pady=(0, 6))
+        dept_label = tk.Label(dept_frame, text=self.tr("lbl_department"),
+                              bg=self._style_colors["card_body_bg"], fg=self._style_colors["text"],
+                              font=("Segoe UI Semibold", 9, "bold"), anchor="w")
+        dept_label.grid(row=1, column=0, sticky="w", padx=(0, 14), pady=(0, 6))
 
         single_wrap = tk.Frame(dept_frame, bg=self._style_colors["card_body_bg"])
         single_wrap.grid(row=1, column=1, sticky="ew", pady=(0, 6))
@@ -1059,7 +1078,12 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
 
         self._add_tooltip(self.department_combo, lambda: self.tr("tt_dept"))
 
-        self._build_order_row(prev_body, row=1)
+        order_label = self._build_order_row(prev_body, row=1)
+        # "Reparto" e "Ordine" stanno in due griglie diverse: stessa larghezza della
+        # prima colonna, cosi' i due menu partono allo stesso punto
+        label_col = max(dept_label.winfo_reqwidth(), order_label.winfo_reqwidth()) + 14
+        dept_frame.columnconfigure(0, minsize=label_col)
+        order_label.master.columnconfigure(0, minsize=label_col)
 
         # --- Badge count + select all/none ---
         badge_row = tk.Frame(prev_body, bg=self._style_colors["card_body_bg"])
@@ -1212,6 +1236,8 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
     def _render_multi_dept_list(self, parent):
         for child in parent.winfo_children():
             child.destroy()
+        # Dopo ogni generazione (o F5) l'elenco si ricrea: le spunte restano
+        ticked = {d for d, v in self.multi_dept_values.items() if v.get()}
         self.multi_dept_values.clear()
         options = department_options(self.templates)
         if not options:
@@ -1220,7 +1246,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
             return
         cols = min(3, max(1, (len(options) + 3) // 4))
         for i, dept in enumerate(options):
-            var = BooleanVar(value=False)
+            var = BooleanVar(value=dept in ticked)
             self.multi_dept_values[dept] = var
             cb = ttk.Checkbutton(parent, text=dept, variable=var,
                                  command=self.update_document_list)
@@ -1233,10 +1259,21 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
             self._single_dept_wrap.grid_remove()
             self._multi_dept_wrap.grid()
             self._render_multi_dept_list(self._multi_dept_wrap)
+            if self.department.get():
+                self._dept_before_multi = self.department.get()
             self.department.set("")
         else:
             self._multi_dept_wrap.grid_remove()
             self._single_dept_wrap.grid(row=1, column=1, sticky="ew", pady=(0, 6))
+            # Si torna al reparto scelto prima della modalita' multi-reparto
+            previous = getattr(self, "_dept_before_multi", "")
+            values = tuple(self.department_combo["values"])
+            if previous in values and self.department.get() != previous:
+                self.department.set(previous)
+                self._apply_department_order()
+            elif not self.department.get() and values:
+                self.department.set(values[0])
+                self._apply_department_order()
         self.update_document_list()
 
     def _current_departments(self) -> list[str]:

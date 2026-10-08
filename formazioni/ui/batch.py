@@ -36,7 +36,7 @@ class BatchMixin:
         def _fmt(n):
             if n == 0:
                 return self.tr("bat_count_none")
-            return self.tr("bat_count", n=n)
+            return self.tr("bat_count_one") if n == 1 else self.tr("bat_count", n=n)
 
         self._inline_batch_count_fmt = _fmt
         self._refresh_inline_batch_count()
@@ -81,8 +81,11 @@ class BatchMixin:
             label.pack_forget()
             return
         dept = self._batch_common_department()
-        text = (self.tr("bat_scope_same", n=n, d=dept) if dept
-                else self.tr("bat_scope_mixed", n=n))
+        if dept:
+            text = (self.tr("bat_scope_same_one", d=dept) if n == 1
+                    else self.tr("bat_scope_same", n=n, d=dept))
+        else:
+            text = self.tr("bat_scope_mixed", n=n)
         label.configure(text=text)
         if not label.winfo_manager():
             label.pack(fill="x", side="top", pady=(0, 6), before=self._progressbar)
@@ -177,11 +180,13 @@ class BatchMixin:
             messagebox.showerror(self.tr("mb_error_title"), str(exc))
             return
         tree = self._inline_batch_tree
+        ignored = 0
         for r in loaded:
             nome = (r.get("Nome") or r.get("name") or "").strip()
             data = (r.get("Data") or r.get("date") or "").strip()
             reparto = (r.get("Reparto") or r.get("department") or "").strip().upper()
             if not nome or not data:
+                ignored += 1
                 continue
             row = {"Nome": nome, "Data": data, "Reparto": reparto}
             self._inline_batch_rows.append(row)
@@ -189,8 +194,13 @@ class BatchMixin:
         self._refresh_inline_batch_count()
         self._show_batch_department()
         self.warm_up_office()
-        self._toast(self.tr("dd_imported", n=len(self._inline_batch_rows) - before,
-                            name=Path(p).name), "success")
+        added = len(self._inline_batch_rows) - before
+        message = (self.tr("dd_imported_one", name=Path(p).name) if added == 1
+                   else self.tr("dd_imported", n=added, name=Path(p).name))
+        if ignored:
+            # Righe senza nome o data: non entrano nell'elenco, ma lo si dice
+            message += " " + self.tr("dd_import_ignored", n=ignored)
+        self._toast(message, "warning" if ignored else "success")
 
     def _pdf_options(self) -> dict[str, Any]:
         return {
@@ -250,7 +260,7 @@ class BatchMixin:
                             reparto_list = [next(iter(dept_opts))]
                         else:
                             skip += 1
-                            details.append(s_tr("bat_skip_dept", i=idx, d=reparto_raw or ""))
+                            details.append(s_tr("bat_skip_nodept", i=idx))
                             continue
                     note = ""
                     ruolo = ""

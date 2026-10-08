@@ -289,5 +289,12 @@
   "lbl_title": "Nom dans l'app",
   "lbl_prompt": "Fichier : {file}\n\nNom visible uniquement dans l'app pour reconnaître le contenu. Il n'apparaît pas dans le PDF. Laissez vide pour afficher le nom du fichier.",
   "lbl_saved": "Nom du document mis à jour.",
-  "tm_col_label": "Nom dans l'app"
+  "tm_col_label": "Nom dans l'app",
+  "bat_count_one": "  1 personne dans la liste",
+  "bat_scope_same_one": "☑ Les coches s'appliquent à la personne de la liste (service {d}).",
+  "dd_imported_one": "1 personne importée depuis {name}.",
+  "dd_import_ignored": "Lignes sans nom ni date non importées : {n}.",
+  "bat_skip_nodept": "ligne {i} : service manquant",
+  "hi_confirm_remove": "Retirer l'entrée de {name} de l'historique ? Le PDF n'est pas supprimé.",
+  "up_err_missing": "source introuvable : {path}"
 }

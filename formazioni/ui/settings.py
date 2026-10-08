@@ -117,6 +117,10 @@ class SettingsMixin:
             try:
                 manifest = fetch_update_manifest(source)
                 self._post("update_result", {"manual": manual, "manifest": manifest})
+            except FileNotFoundError:
+                # Cartella di rete o version.json inesistente: messaggio comprensibile
+                self._post("update_result", {"manual": manual,
+                                             "error": self.tr("up_err_missing", path=source)})
             except Exception as error:  # noqa: BLE001 - rete/percorso non raggiungibile
                 self._post("update_result", {"manual": manual, "error": str(error)})
 

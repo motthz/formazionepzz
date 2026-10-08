@@ -289,5 +289,12 @@
   "lbl_title": "Name in der App",
   "lbl_prompt": "Datei: {file}\n\nName, der nur in der App angezeigt wird, um den Inhalt zu erkennen. Er erscheint nicht im PDF. Leer lassen, um den Dateinamen anzuzeigen.",
   "lbl_saved": "Dokumentname aktualisiert.",
-  "tm_col_label": "Name in der App"
+  "tm_col_label": "Name in der App",
+  "bat_count_one": "  1 Person in der Liste",
+  "bat_scope_same_one": "☑ Die Häkchen gelten für die Person in der Liste (Abteilung {d}).",
+  "dd_imported_one": "1 Person aus {name} importiert.",
+  "dd_import_ignored": "Nicht importierte Zeilen ohne Name oder Datum: {n}.",
+  "bat_skip_nodept": "Zeile {i}: Abteilung fehlt",
+  "hi_confirm_remove": "Den Eintrag von {name} aus dem Verlauf entfernen? Die PDF wird nicht gelöscht.",
+  "up_err_missing": "Quelle nicht gefunden: {path}"
 }

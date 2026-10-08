@@ -49,14 +49,15 @@ class OrderingMixin:
                 for t in apply_order(self.templates, self.doc_order, folder)]
 
     # ---------------------- Widget ----------------------------------------
-    def _build_order_row(self, parent, row: int) -> None:
+    def _build_order_row(self, parent, row: int):
+        """Riga "Ordine" con menu e pulsanti; ritorna l'etichetta per l'allineamento."""
         colors = self._style_colors
         frame = tk.Frame(parent, bg=colors["card_body_bg"])
         frame.grid(row=row, column=0, sticky="ew", pady=(0, 12))
         frame.columnconfigure(1, weight=1)
-        tk.Label(frame, text=self.tr("ord_label"), bg=colors["card_body_bg"], fg=colors["text"],
-                 font=("Segoe UI Semibold", 9, "bold"), anchor="w"
-                 ).grid(row=0, column=0, sticky="w", padx=(0, 14))
+        label = tk.Label(frame, text=self.tr("ord_label"), bg=colors["card_body_bg"],
+                         fg=colors["text"], font=("Segoe UI Semibold", 9, "bold"), anchor="w")
+        label.grid(row=0, column=0, sticky="w", padx=(0, 14))
         self._order_choice = StringVar()
         combo = ttk.Combobox(frame, state="readonly", textvariable=self._order_choice,
                              font=("Segoe UI", 10), height=12, width=12)
@@ -81,6 +82,7 @@ class OrderingMixin:
         self._order_hint.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._fluid_wrap(self._order_hint)
         self._refresh_order_choices()
+        return label
 
     def _build_order_tools(self, parent, row: int) -> None:
         colors = self._style_colors
