@@ -18,8 +18,10 @@ from ..templates import (
     load_departments_from_file,
     move_template_to_trash,
     parse_template,
+    rename_template_key,
     save_hashes,
     suggest_template_code,
+    template_key,
     validate_template_fields,
 )
 from ..tkcompat import BOTH, END, LEFT, RIGHT, StringVar, X, filedialog, messagebox, tk, ttk
@@ -180,15 +182,20 @@ class DialogsMixin:
         code_ent.grid(row=3, column=1, sticky="w", pady=(0, 10))
         code_ent.bind("<Key>", lambda _e: code_touched.__setitem__("value", True))
 
+        label(self.tr("tm_col_label"), 4)
+        label_var = StringVar(value=initial.get("label", ""))
+        ttk.Entry(body, textvariable=label_var, width=34
+                  ).grid(row=4, column=1, sticky="ew", pady=(0, 10))
+
         tk.Label(body, text=self.tr("tm_form_hint"), bg=colors["card_body_bg"],
                  fg=colors["text_muted"], font=("Segoe UI", 8), anchor="w",
                  wraplength=420, justify="left"
-                 ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
+                 ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         preview_var = StringVar()
         tk.Label(body, textvariable=preview_var, bg=colors["card_body_bg"],
                  fg=colors["text"], font=("Consolas", 10, "bold"), anchor="w"
-                 ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 14))
+                 ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 14))
 
         def refresh_preview(*_):
             if not code_touched["value"]:
@@ -214,11 +221,12 @@ class DialogsMixin:
                 return
             result.update(department=dept_var.get().strip().upper(),
                           copies=int(copies_var.get()),
-                          code=code_var.get().strip().upper())
+                          code=code_var.get().strip().upper(),
+                          label=" ".join(label_var.get().split()))
             dlg.destroy()
 
         btns = tk.Frame(body, bg=colors["card_body_bg"])
-        btns.grid(row=6, column=0, columnspan=2, sticky="e")
+        btns.grid(row=7, column=0, columnspan=2, sticky="e")
         self._button(btns, "de_cancel", style="Secondary.TButton",
                    command=dlg.destroy).pack(side=LEFT, padx=(0, 10))
         self._button(btns, "tm_form_ok", style="Primary.TButton",
@@ -259,9 +267,10 @@ class DialogsMixin:
         list_wrap.pack(fill=BOTH, expand=True, pady=(0, 12))
         list_wrap.columnconfigure(0, weight=1)
         list_wrap.rowconfigure(0, weight=1)
-        columns = ("file", "dept", "copies", "code", "status")
+        columns = ("file", "label", "dept", "copies", "code", "status")
         tree = ttk.Treeview(list_wrap, columns=columns, show="headings", selectmode="extended")
-        widths = {"file": 280, "dept": 170, "copies": 70, "code": 80, "status": 220}
+        widths = {"file": 230, "label": 220, "dept": 150, "copies": 60, "code": 70,
+                  "status": 170}
         for col in columns:
             tree.heading(col, text=self.tr(f"tm_col_{col}"))
             tree.column(col, width=widths[col],
@@ -286,11 +295,13 @@ class DialogsMixin:
             for tpl in ordered:
                 dept = (self.tr("tm_all_depts") if tpl.is_for_every_department
                         else tpl.department.upper())
-                iid = tree.insert("", END, values=(tpl.display_name, dept, tpl.copies, tpl.code,
-                                                   "✓ " + self.tr("tm_status_ok")))
+                label = self.module_settings.get("labels", {}).get(
+                    template_key(tpl.path, folder()), "")
+                iid = tree.insert("", END, values=(tpl.display_name, label, dept, tpl.copies,
+                                                   tpl.code, "✓ " + self.tr("tm_status_ok")))
                 rows[iid] = tpl.path
             for path in self.ignored:
-                iid = tree.insert("", END, values=(path.name, "—", "—", "—",
+                iid = tree.insert("", END, values=(path.name, "", "—", "—", "—",
                                                    "⚠ " + self.tr("tm_status_invalid")),
                                   tags=("invalid",))
                 rows[iid] = path
@@ -307,11 +318,13 @@ class DialogsMixin:
             return paths[0]
 
         def initial_for(path: Path) -> dict[str, Any]:
+            label = self.module_settings.get("labels", {}).get(template_key(path, folder()), "")
             tpl = parse_template(path)
             if tpl:
                 return {"department": tpl.department.upper(), "copies": tpl.copies,
-                        "code": tpl.code}
-            return {"department": self.department.get() or "", "copies": 1, "code": ""}
+                        "code": tpl.code, "label": label}
+            return {"department": self.department.get() or "", "copies": 1, "code": "",
+                    "label": label}
 
         def add_files():
             sources = filedialog.askopenfilenames(
@@ -349,10 +362,12 @@ class DialogsMixin:
                     try:
                         shutil.copy2(src, target)
                         added += 1
+                        self.set_template_label(target, values["label"])
                     except OSError as exc:
                         messagebox.showerror(self.tr("tm_title"), str(exc), parent=win)
                     break
             if added:
+                self._save_module_settings(parent=win)
                 reload()
                 self.status.set(self.tr("tm_added", n=added))
 
@@ -369,6 +384,10 @@ class DialogsMixin:
                 target = path.with_name(build_template_filename(
                     values["department"], values["copies"], values["code"], path.suffix))
                 if target == path:
+                    if values["label"] != initial.get("label", ""):
+                        self.set_template_label(path, values["label"])
+                        self._save_module_settings(parent=win)
+                        reload()
                     return
                 if target.exists():
                     messagebox.showwarning(self.tr("de_err_exists_title"),
@@ -386,6 +405,12 @@ class DialogsMixin:
                     save_hashes(self.saved_hashes)
                 if path in self.template_inclusion:
                     self.template_inclusion[target] = self.template_inclusion.pop(path)
+                # Nome in app e posizione negli ordini seguono il file rinominato
+                old_key, new_key = template_key(path, folder()), template_key(target, folder())
+                rename_template_key(self.module_settings, old_key, new_key)
+                self.doc_order = [new_key if k == old_key else k for k in self.doc_order]
+                self.set_template_label(target, values["label"])
+                self._save_module_settings(parent=win)
                 reload()
                 self.status.set(self.tr("tm_renamed", name=target.name))
                 return

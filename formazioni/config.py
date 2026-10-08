@@ -20,7 +20,7 @@ def _resolve_app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 DEFAULT_UPDATE_SOURCE = "https://api.github.com/repos/motthz/formazionepzz/releases/latest"
 APP_DIR = _resolve_app_dir()
 DEFAULT_TEMPLATE_DIR = APP_DIR / "templates"

@@ -18,6 +18,7 @@ build/
 dist/
 .formazioni_history.json
 .template_hashes.json
+templates/_nomi_e_ordini.json
 settings.json
 .trigger-build
 __pycache__/

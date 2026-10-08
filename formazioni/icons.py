@@ -132,6 +132,7 @@ BUTTON_ICONS = {
     "hi_open_pdf": "file", "hi_open_dir": "folder", "hi_reuse": "refresh",
     "hi_remove": "trash", "de_add": "plus", "de_rename": "edit", "de_delete": "trash",
     "st_check_now": "refresh", "st_open_log": "file", "secure_label": "lock", "bat_inline_title": "list",
+    "ord_save": "check", "ord_delete": "trash", "ord_rename": "edit",
 }
 
 

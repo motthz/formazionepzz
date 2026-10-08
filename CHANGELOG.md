@@ -2,6 +2,14 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## 2.7.0
+
+**Per chi usa l'app**
+- **Ordine dei documenti a scelta**: nell'elenco dei documenti si trascinano le righe (o si usano ▲ ▼ e Alt+frecce) per decidere in che ordine entrano nel PDF.
+- **Ordini salvati come modelli**: con "Salva ordine…" l'ordine e le spunte si salvano con un nome e si possono collegare a un reparto. L'ordine collegato si applica da solo quando si sceglie quel reparto e alle persone di quel reparto nell'elenco batch, per esempio a tutti i nuovi assunti delle vendite.
+- **Nomi dei moduli visibili solo nell'app**: doppio clic su un documento (o "Nome in app", F2, oppure da Gestisci moduli) per chiamarlo, per esempio, "Regolamento aziendale" invece di `TUTTI_1_GEN.docx`. Il PDF e il nome del file non cambiano.
+- Nomi e ordini sono salvati in `_nomi_e_ordini.json` nella cartella dei modelli, quindi seguono la cartella anche se è condivisa in rete; rinominando un modulo da Gestisci moduli il nome e la posizione negli ordini lo seguono.
+
 ## 2.6.0
 
 **Per chi usa l'app**

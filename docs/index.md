@@ -36,6 +36,14 @@ Dentro i modelli scrivi **`*nome*`** e **`*data*`** dove devono comparire nome e
 2. Nella scheda **03** scegli il reparto. Con **Modalità multi-reparto** puoi sceglierne più di uno. L'elenco mostra i documenti che entreranno nel dossier: togli la spunta a quelli da escludere.
 3. Clicca **Anteprima** per un controllo veloce (una copia per modulo, con la scritta ANTEPRIMA), poi **Genera PDF unico**.
 
+### Ordine dei documenti e nomi in app
+
+- Per cambiare l'ordine dei documenti nel PDF **trascina le righe** dell'elenco, oppure seleziona un documento e usa **▲ ▼** (o Alt+↑ / Alt+↓).
+- **Salva ordine…** salva l'ordine e le spunte con un nome, per esempio "Vendite". Se lo colleghi a un reparto, l'ordine si applica da solo ogni volta che scegli quel reparto e a tutte le persone di quel reparto nell'elenco batch. Gli ordini salvati si scelgono anche dal menu **Ordine**; **Predefinito** torna all'ordine di sempre (prima i documenti TUTTI, poi per nome). I moduli aggiunti dopo aver salvato un ordine finiscono in fondo.
+- **Doppio clic** su un documento (o **Nome in app**, o F2) per dargli un nome che vedi solo nel programma, per esempio "Regolamento aziendale" al posto di `TUTTI_1_GEN.docx`. Nel PDF non compare. Il nome si imposta anche da **Gestisci moduli**.
+
+Nomi e ordini stanno nel file `_nomi_e_ordini.json` dentro la cartella dei modelli: se la cartella è condivisa in rete, li vedono tutti.
+
 ![Dossier pronto](img/generazione.png)
 
 A fine lavoro compare un avviso in basso con **Apri PDF**. Se nel frattempo stavi usando un'altra finestra, arriva anche la notifica di Windows.
@@ -45,6 +53,7 @@ A fine lavoro compare un avviso in basso con **Apri PDF**. Se nel frattempo stav
 - Dopo aver scritto nome e data, premi **Invio** o **Aggiungi persona**: la persona entra nell'elenco della scheda 02.
 - Per molte persone usa **Modello Excel**: scarichi un file già pronto con le colonne Nome, Data e Reparto. Compilalo, poi caricalo con **Importa CSV/Excel** oppure trascinalo sull'elenco.
 - **Genera tutti i PDF** crea un dossier per ogni persona, convertendo tutti i moduli in un'unica sessione di Word.
+- Le spunte e l'ordine dell'elenco documenti valgono per le persone del reparto mostrato. Le persone di un altro reparto che ha un ordine salvato collegato ricevono quell'ordine.
 
 ## 5. Storico
 
