@@ -36,7 +36,6 @@ class DialogsMixin:
         win.title(self.tr("de_title"))
         win.transient(self.root)
         win.grab_set()
-        win.geometry("520x480")
         win.configure(bg=self._style_colors["app_bg"])
         try:
             _set_app_icon(win)
@@ -133,6 +132,9 @@ class DialogsMixin:
                    command=save_and_close).pack(side=RIGHT)
         self._button(footer, "de_cancel", style="Secondary.TButton",
                    command=win.destroy).pack(side=RIGHT, padx=(0, 10))
+        # Dimensione dai contenuti: una misura fissa tagliava i pulsanti a 125-150% di scala
+        win.update_idletasks()
+        win.minsize(win.winfo_reqwidth(), win.winfo_reqheight())
 
     # ---------------------- Gestione moduli ------------------------------
     def _template_form(self, parent, title: str, source_name: str,
@@ -174,7 +176,9 @@ class DialogsMixin:
         dept_cb.grid(row=1, column=1, sticky="ew", pady=(0, 10))
 
         label(self.tr("tm_col_copies"), 2)
-        copies_sp = ttk.Spinbox(body, from_=1, to=50, textvariable=copies_var, width=6)
+        # Combobox modificabile: stesso stile arrotondato degli altri campi (la Spinbox no)
+        copies_sp = ttk.Combobox(body, textvariable=copies_var, width=6,
+                                 values=[str(n) for n in range(1, 21)])
         copies_sp.grid(row=2, column=1, sticky="w", pady=(0, 10))
 
         label(self.tr("tm_col_code"), 3)
@@ -269,8 +273,8 @@ class DialogsMixin:
         list_wrap.rowconfigure(0, weight=1)
         columns = ("file", "label", "dept", "copies", "code", "status")
         tree = ttk.Treeview(list_wrap, columns=columns, show="headings", selectmode="extended")
-        widths = {"file": 230, "label": 220, "dept": 150, "copies": 60, "code": 70,
-                  "status": 170}
+        widths = {"file": 230, "label": 170, "dept": 150, "copies": 60, "code": 70,
+                  "status": 130}
         for col in columns:
             tree.heading(col, text=self.tr(f"tm_col_{col}"))
             tree.column(col, width=widths[col],

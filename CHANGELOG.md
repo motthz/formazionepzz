@@ -2,6 +2,21 @@
 
 Tutte le modifiche importanti di Formazioni PZZ, dalla più recente. Gli eseguibili di ogni versione si scaricano dalle [Release](https://github.com/motthz/formazionepzz/releases).
 
+## 2.7.1
+
+**Correzioni**
+- **Gestisci reparti**: con la scala di Windows al 125% o più i pulsanti Aggiungi, Rinomina ed Elimina erano tagliati e "Salva e chiudi" non si vedeva; ora la finestra si adatta al contenuto.
+- **Modalità multi-reparto**: dopo "Genera" (o F5) le spunte dei reparti si azzeravano e la lista dei documenti restava vuota; ora restano, anche cambiando tema o lingua. Uscendo dalla modalità torna il reparto scelto prima.
+- **Modello Excel per il batch**: non contiene più la riga d'esempio "Mario Rossi", che se dimenticata generava un dossier in più; l'esempio è nel commento delle intestazioni.
+- **Finestra stretta**: i pulsanti Storico e Impostazioni vanno a capo invece di schiacciarsi.
+
+**Dettagli**
+- "1 persona in elenco" invece di "1 persone"; nel riepilogo batch "reparto mancante" invece di `reparto "" non trovato`; all'importazione si dice quante righe senza nome o data sono state saltate.
+- Lo storico chiede conferma prima di rimuovere una voce (il PDF non viene cancellato).
+- Origine aggiornamenti inesistente: messaggio comprensibile invece dell'errore tecnico.
+- "Reparto" e "Ordine" allineati; campo Copie con lo stesso stile degli altri; colonne di Storico e Gestisci moduli meno tagliate.
+- Se Word o Excel non si avviano, il registro errori riporta il dettaglio una volta sola invece che a ogni dossier.
+
 ## 2.7.0
 
 **Per chi usa l'app**

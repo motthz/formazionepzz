@@ -289,5 +289,12 @@
   "lbl_title": "App name",
   "lbl_prompt": "File: {file}\n\nName shown only in the app to recognise the content. It does not appear in the PDF. Leave empty to show the file name.",
   "lbl_saved": "Document name updated.",
-  "tm_col_label": "App name"
+  "tm_col_label": "App name",
+  "bat_count_one": "  1 person in the list",
+  "bat_scope_same_one": "☑ The ticks apply to the person in the list (department {d}).",
+  "dd_imported_one": "1 person imported from {name}.",
+  "dd_import_ignored": "Rows without a name or date not imported: {n}.",
+  "bat_skip_nodept": "row {i}: department missing",
+  "hi_confirm_remove": "Remove {name}'s entry from the history? The PDF is not deleted.",
+  "up_err_missing": "source not found: {path}"
 }

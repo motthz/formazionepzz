@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import tempfile
 import traceback
 from dataclasses import dataclass
@@ -632,6 +633,20 @@ def build_pdfs(
     return results
 
 
+_last_office_fallback: BaseException | None = None
+
+
+def _report_office_fallback(exc: BaseException) -> None:
+    """Registra il ripiego su ReportLab. Se Office non parte, la sessione rilancia lo
+    stesso errore per un minuto: il dettaglio completo si scrive solo la prima volta."""
+    global _last_office_fallback
+    if exc is _last_office_fallback:
+        print(f"Office non disponibile, dossier creato con ReportLab: {exc}", file=sys.stderr)
+        return
+    _last_office_fallback = exc
+    traceback.print_exception(exc)
+
+
 def _build_pdf_content(
     output_path: Path,
     employee_name: str,
@@ -664,11 +679,11 @@ def _build_pdf_content(
             if error is None:
                 return len(expanded)
             raise error
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             if needs_legacy_office:
                 raise
             # .doc/.xls richiedono Office; per gli altri formati si ripiega su ReportLab
-            traceback.print_exc()
+            _report_office_fallback(exc)
     has_landscape_pdf = any(
         template.path.suffix.lower() == ".pdf" and _pdf_is_landscape(template.path)
         for template, _ in expanded

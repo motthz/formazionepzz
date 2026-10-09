@@ -289,5 +289,12 @@
   "lbl_title": "Nombre en la app",
   "lbl_prompt": "Archivo: {file}\n\nNombre visible solo en la app para reconocer el contenido. No aparece en el PDF. Déjalo vacío para mostrar el nombre del archivo.",
   "lbl_saved": "Nombre del documento actualizado.",
-  "tm_col_label": "Nombre en la app"
+  "tm_col_label": "Nombre en la app",
+  "bat_count_one": "  1 persona en la lista",
+  "bat_scope_same_one": "☑ Las marcas se aplican a la persona de la lista (departamento {d}).",
+  "dd_imported_one": "1 persona importada de {name}.",
+  "dd_import_ignored": "Filas sin nombre o fecha no importadas: {n}.",
+  "bat_skip_nodept": "fila {i}: falta el departamento",
+  "hi_confirm_remove": "¿Quitar del historial la entrada de {name}? El PDF no se borra.",
+  "up_err_missing": "origen no encontrado: {path}"
 }
