@@ -20,8 +20,14 @@ Serve Windows per l'interfaccia completa e per la conversione con Microsoft Offi
 | `formazioni/templates.py` | nomi dei moduli, reparti, impronte MD5 |
 | `formazioni/office.py` | conversione con Word/Excel o LibreOffice |
 | `formazioni/pdf.py` | motore dei dossier: unione, filigrana, batch, cache |
+| `formazioni/batch_import.py` | lettura degli elenchi CSV/Excel e preparazione dei lotti |
+| `formazioni/dossier.py` | controlli, nome del file e impronte di una generazione |
+| `formazioni/history.py` | storico dei dossier generati |
+| `formazioni/ordering.py` | ordini dei documenti salvati e nomi dei moduli |
 | `formazioni/ui/` | interfaccia: `app.py` finestra principale, `batch.py`, `history.py`, `settings.py`, `dialogs.py`, `feedback.py`, `kit.py` (grafica) |
 | `lang/*.json` | testi nelle 5 lingue |
+
+Fuori da `formazioni/ui/` (e da `icons.py`, `system.py`, `tkcompat.py`) il codice non usa Tkinter: la logica nuova va lì, e l'interfaccia si limita a finestre e messaggi. `tests/test_logica.py` controlla che quei moduli si importino senza Tkinter.
 | `installer/` | programma di installazione |
 | `tests/` | test (pytest) |
 | `tools/` | logo e screenshot della documentazione |

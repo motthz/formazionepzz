@@ -7,10 +7,17 @@ Struttura del pacchetto:
     office       conversione con Microsoft Office o LibreOffice
     pdf          motore dei dossier (copertina, unione, filigrana, batch)
     batch_excel  modello Excel per l'import di piu' dipendenti
+    batch_import lettura degli elenchi CSV/Excel e preparazione dei lotti
+    dossier      controlli, nome del file e impronte di una generazione
+    history      storico dei dossier generati
+    ordering     ordini salvati e nomi dei moduli
     updates      controllo e scaricamento degli aggiornamenti
     logs         registro degli errori
     icons, system, tkcompat   supporto all'interfaccia e a Windows
     ui/          interfaccia grafica Tkinter (ui/kit.py: grafica arrotondata)
+
+Tutto tranne icons, system, tkcompat e ui/ funziona senza Tkinter: e' la parte
+riusabile da un backend web (lo verifica tests/test_logica.py).
 """
 
 import importlib
