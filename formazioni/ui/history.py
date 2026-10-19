@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..config import HISTORY_FILE, HISTORY_LIMIT
+from .. import history as history_store
 from ..system import _set_app_icon, open_folder
 from ..templates import department_options
 from ..tkcompat import BOTH, END, LEFT, RIGHT, StringVar, X, messagebox, tk, ttk
@@ -18,38 +16,17 @@ class HistoryMixin:
     """Parte di FormazioniApp: storico dei dossier generati."""
 
     # ---------------------- History ---------------------------------------
+    # Lettura e scrittura stanno in formazioni.history; qui restano i nomi usati dall'app.
     @staticmethod
     def _load_history() -> list[dict[str, Any]]:
-        if not HISTORY_FILE.exists():
-            return []
-        try:
-            history = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        return [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+        return history_store.load_history()
 
     def _write_history(self, history: list[dict[str, Any]]) -> None:
-        try:
-            HISTORY_FILE.write_text(
-                json.dumps(history[:HISTORY_LIMIT], ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except OSError:
-            # La cronologia e' accessoria: un errore qui non deve far fallire il dossier
-            traceback.print_exc()
+        history_store.write_history(history)
 
     def _save_history(self, output_path: Path, name: str, department: str, total: int,
                       entry_date: str = "") -> None:
-        with self._history_lock:
-            history = self._load_history()
-            history.insert(0, {
-                "path": str(output_path),
-                "name": name,
-                "entry_date": entry_date,
-                "department": department,
-                "documents": total,
-                "ts": datetime.now().isoformat(timespec="seconds"),
-            })
-            self._write_history(history)
+        history_store.record_dossier(output_path, name, department, total, entry_date)
 
     def open_history(self):
         colors = self._style_colors
@@ -107,13 +84,10 @@ class HistoryMixin:
         def reload(*_):
             tree.delete(*tree.get_children())
             rows.clear()
-            needle = query.get().strip().lower()
             history = self._load_history()
             shown = 0
             for entry in history:
-                haystack = " ".join(str(entry.get(k, "")) for k in
-                                    ("name", "department", "entry_date", "path")).lower()
-                if needle and needle not in haystack:
+                if not history_store.matches_query(entry, query.get()):
                     continue
                 path = Path(str(entry.get("path", "")))
                 exists = path.exists()
@@ -170,9 +144,7 @@ class HistoryMixin:
                                        self.tr("hi_confirm_remove", name=entry.get("name", "")),
                                        parent=win):
                 return
-            with self._history_lock:
-                history = [h for h in self._load_history() if h != entry]
-                self._write_history(history)
+            history_store.remove_entry(entry)
             reload()
 
         for text_key, cmd, style in (

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import queue
-import tempfile
 import threading
 import time
 import traceback
 from dataclasses import replace as dc_replace
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +18,19 @@ from ..config import (
     DEFAULT_THEME,
     ICON_PNG,
     LOGO_HEADER_PNG,
-    PREVIEW_PREFIX,
     SYSTEM_THEME_POLL_MS,
     available_languages,
     load_language,
     load_settings,
     resolve_theme,
     save_settings,
+)
+from ..dossier import (
+    check_request,
+    hash_counts,
+    output_path_for,
+    preview_output_path,
+    remember_template_hashes,
 )
 from ..icons import BUTTON_ICONS, strip_leading_symbol
 from ..logs import setup_error_log
@@ -46,13 +50,10 @@ from ..templates import (
     TemplateFile,
     apply_order,
     classify_template_hashes,
-    compute_template_hash,
     department_options,
     discover_templates,
     load_module_settings,
     load_saved_hashes,
-    safe_file_part,
-    save_hashes,
     templates_for_department,
     templates_for_departments,
 )
@@ -117,7 +118,6 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         self._current_width = 1120
         self._current_breakpoint = "wide"
         self._progressbar: ttk.Progressbar | None = None
-        self._history_lock = threading.Lock()
         self._update_check_running = False
 
         self.root.title(self.tr("app_title"))
@@ -1550,10 +1550,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         self.hash_status = classify_template_hashes(self.templates, self.saved_hashes)
         self._refresh_order_choices()
         self.update_document_list()
-        ok = sum(1 for v in self.hash_status.values() if v == "ok")
-        mod = sum(1 for v in self.hash_status.values() if v == "modified")
-        new = sum(1 for v in self.hash_status.values() if v == "new")
-        self.hash_stat_label.set(self.tr("hash_status", ok=ok, mod=mod, new=new))
+        self.hash_stat_label.set(self.tr("hash_status", **hash_counts(self.hash_status)))
         if not folder.exists():
             self.status.set(self.tr("status_no_folder"))
         elif not self.templates:
@@ -1616,18 +1613,11 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         name = self.employee_name.get().strip()
         entry_date = self.date_picker.get_string()
         departments = self._current_departments()
-        if not name and require_name:
-            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_name"))
-            return None
-        if not entry_date:
-            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_date"))
-            return None
-        if not departments:
-            messagebox.showwarning(self.tr("mb_missing_title"), self.tr("mb_missing_dept"))
-            return None
         selected = self._current_selected_templates()
-        if not selected:
-            messagebox.showwarning(self.tr("mb_no_docs_title"), self.tr("mb_no_docs_body"))
+        problem = check_request(name, entry_date, departments, selected, require_name)
+        if problem is not None:
+            title, body = problem
+            messagebox.showwarning(self.tr(title), self.tr(body))
             return None
         return name, entry_date, departments, selected
 
@@ -1641,8 +1631,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         name, entry_date, departments, selected = form
         name = name or self.tr("pv_sample_name")
         single_copies = [dc_replace(t, copies=1) for t in selected]
-        output_path = Path(tempfile.gettempdir()) / (
-            f"{PREVIEW_PREFIX}{os.getpid()}_{datetime.now():%H%M%S%f}.pdf")
+        output_path = preview_output_path()
         watermark = self.tr("pv_watermark")
         self._worker_active = True
         self.status.set(self.tr("pv_status_running"))
@@ -1671,16 +1660,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
         if form is None:
             return
         name, entry_date, departments, selected = form
-        output_dir_path = Path(self.output_dir.get()).expanduser()
-        dept_tag = safe_file_part("+".join(departments))
-        base = output_dir_path / f"dossier_{safe_file_part(name)}_{dept_tag}.pdf"
-        output_path = base
-        counter = 2
-        while output_path.exists():
-            output_path = output_dir_path / (
-                f"dossier_{safe_file_part(name)}_{dept_tag}_{counter}.pdf"
-            )
-            counter += 1
+        output_path = output_path_for(Path(self.output_dir.get()).expanduser(), name, departments)
         dept_str = "+".join(departments)
         self._worker_active = True
         self.status.set(self.tr("mb_progress_status"))
@@ -1704,13 +1684,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
                                   ruolo, note, selected,
                                   progress_cb=progress_cb, **pdf_options)
                 self._save_history(output_path, name, dept_str, total, entry_date)
-                hashes = dict(saved_snapshot)
-                for t in selected:
-                    try:
-                        hashes[str(t.path)] = compute_template_hash(t.path)
-                    except Exception:
-                        pass
-                save_hashes(hashes)
+                remember_template_hashes(selected, saved_snapshot)
                 self._post("status", tr_done)
                 self._post("done_single", {
                     "ok": True, "path": str(output_path), "total": total,
@@ -1787,10 +1761,7 @@ class FormazioniApp(OrderingMixin, BatchMixin, HistoryMixin, SettingsMixin, Dial
                     self._worker_active = False
                     self.saved_hashes = load_saved_hashes()
                     self.hash_status = classify_template_hashes(self.templates, self.saved_hashes)
-                    ok = sum(1 for v in self.hash_status.values() if v == "ok")
-                    mod = sum(1 for v in self.hash_status.values() if v == "modified")
-                    new = sum(1 for v in self.hash_status.values() if v == "new")
-                    self.hash_stat_label.set(self.tr("hash_status", ok=ok, mod=mod, new=new))
+                    self.hash_stat_label.set(self.tr("hash_status", **hash_counts(self.hash_status)))
         except queue.Empty:
             pass
         finally:

@@ -6,10 +6,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..ordering import (
+    excluded_keys,
+    full_order,
+    linked_department,
+    merge_visible_order,
+    save_order,
+    set_template_label,
+    template_label,
+)
 from ..system import _set_app_icon
 from ..templates import (
     TemplateFile,
-    apply_order,
     department_options,
     order_for_department,
     save_module_settings,
@@ -30,8 +38,7 @@ class OrderingMixin:
 
     def _template_label(self, template: TemplateFile) -> str:
         """Nome mostrato nell'app: quello scelto dall'utente, altrimenti il nome del file."""
-        label = self.module_settings.get("labels", {}).get(self._template_key(template))
-        return label or template.path.name
+        return template_label(self.module_settings, template, self._template_folder())
 
     def _save_module_settings(self, parent=None) -> bool:
         try:
@@ -44,9 +51,7 @@ class OrderingMixin:
 
     def _full_order(self) -> list[str]:
         """Chiavi di tutti i moduli nell'ordine attuale."""
-        folder = self._template_folder()
-        return [template_key(t.path, folder)
-                for t in apply_order(self.templates, self.doc_order, folder)]
+        return full_order(self.templates, self.doc_order, self._template_folder())
 
     # ---------------------- Widget ----------------------------------------
     def _build_order_row(self, parent, row: int):
@@ -118,7 +123,7 @@ class OrderingMixin:
         if getattr(self, "_order_changed", False):
             shown += self.tr("ord_changed_suffix")
         self._order_choice.set(shown)
-        dept = orders.get(name, {}).get("department") if name else ""
+        dept = linked_department(self.module_settings, name)
         if dept:
             hint = self.tr("ord_hint_linked", d=dept)
         elif name:
@@ -136,14 +141,13 @@ class OrderingMixin:
     # ---------------------- Applicare un ordine ---------------------------
     def apply_saved_order(self, name: str | None) -> None:
         """Applica un ordine salvato (ordine e documenti esclusi), o quello predefinito."""
-        entry = self.module_settings.get("orders", {}).get(name or "")
-        if entry is None:
+        excluded = excluded_keys(self.module_settings, name)
+        if excluded is None:
             self.doc_order = []
-            excluded: set[str] = set()
+            excluded = set()
             self.active_order.set("")
         else:
-            self.doc_order = list(entry.get("order", []))
-            excluded = set(entry.get("excluded", []))
+            self.doc_order = list(self.module_settings["orders"][name or ""].get("order", []))
             self.active_order.set(name or "")
         for template in self.templates:
             self.template_inclusion[template.path] = self._template_key(template) not in excluded
@@ -168,7 +172,7 @@ class OrderingMixin:
             if linked != active:
                 self.apply_saved_order(linked)
             return
-        active_dept = self.module_settings.get("orders", {}).get(active, {}).get("department")
+        active_dept = linked_department(self.module_settings, active)
         if active_dept and active_dept != dept:
             self.apply_saved_order(None)
 
@@ -187,10 +191,8 @@ class OrderingMixin:
     def _commit_visible_order(self, visible: list[Path]) -> None:
         """La lista mostra solo i moduli dei reparti scelti: questi vanno in testa
         nell'ordine nuovo, gli altri mantengono la loro posizione relativa."""
-        folder = self._template_folder()
-        keys = [template_key(p, folder) for p in visible]
-        shown = set(keys)
-        self.doc_order = keys + [k for k in self._full_order() if k not in shown]
+        self.doc_order = merge_visible_order(visible, self.templates, self.doc_order,
+                                             self._template_folder())
         self._mark_order_changed()
         self.update_document_list()
 
@@ -312,12 +314,7 @@ class OrderingMixin:
         return result.get("value")
 
     def set_template_label(self, path: Path, label: str) -> None:
-        labels = self.module_settings.setdefault("labels", {})
-        key = template_key(path, self._template_folder())
-        if label:
-            labels[key] = label
-        else:
-            labels.pop(key, None)
+        set_template_label(self.module_settings, path, self._template_folder(), label)
 
     def rename_selected_template(self) -> None:
         path = self._selected_tree_path()
@@ -376,18 +373,8 @@ class OrderingMixin:
             return
         name, dept = result["name"], result["department"]
         visible = [self._row_path[i] for i in self.tree.get_children()]
-        folder = self._template_folder()
-        if dept:
-            # Un reparto ha un solo ordine collegato
-            for other in orders.values():
-                if other.get("department") == dept:
-                    other["department"] = ""
-        orders[name] = {
-            "order": [template_key(p, folder) for p in visible],
-            "excluded": [template_key(p, folder) for p in visible
-                         if not self.template_inclusion.get(p, True)],
-            "department": dept,
-        }
+        save_order(self.module_settings, name, visible, self.template_inclusion,
+                   self._template_folder(), dept)
         if not self._save_module_settings():
             return
         self.active_order.set(name)

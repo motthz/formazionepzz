@@ -2,28 +2,27 @@
 
 from __future__ import annotations
 
-import csv
 import threading
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from ..batch_excel import write_batch_template
-from ..config import ALL_DEPARTMENT_NAMES
-from ..documents import load_workbook
-from ..icons import strip_leading_symbol
-from ..pdf import DossierJob, build_pdfs
-from ..system import open_folder
-from ..templates import (
-    apply_order,
-    compute_template_hash,
-    department_options,
-    order_for_department,
-    safe_file_part,
-    save_hashes,
-    templates_for_departments,
-    templates_from_saved_order,
+from ..batch_import import (
+    BatchPlan,
+    UnsupportedBatchFile,
+    coerce_date_value,
+    normalize_column_header,
+    parse_batch_file,
+    parse_date,
+    people_from_records,
+    plan_batch,
 )
+from ..config import ALL_DEPARTMENT_NAMES
+from ..dossier import remember_template_hashes
+from ..icons import strip_leading_symbol
+from ..pdf import build_pdfs
+from ..system import open_folder
+from ..templates import department_options
 from ..tkcompat import END, StringVar, filedialog, messagebox
 
 
@@ -180,17 +179,10 @@ class BatchMixin:
             messagebox.showerror(self.tr("mb_error_title"), str(exc))
             return
         tree = self._inline_batch_tree
-        ignored = 0
-        for r in loaded:
-            nome = (r.get("Nome") or r.get("name") or "").strip()
-            data = (r.get("Data") or r.get("date") or "").strip()
-            reparto = (r.get("Reparto") or r.get("department") or "").strip().upper()
-            if not nome or not data:
-                ignored += 1
-                continue
-            row = {"Nome": nome, "Data": data, "Reparto": reparto}
+        people, ignored = people_from_records(loaded)
+        for row in people:
             self._inline_batch_rows.append(row)
-            tree.insert("", END, values=(nome, data, reparto))
+            tree.insert("", END, values=(row["Nome"], row["Data"], row["Reparto"]))
         self._refresh_inline_batch_count()
         self._show_batch_department()
         self.warm_up_office()
@@ -228,91 +220,34 @@ class BatchMixin:
                 return raw
 
         tpl_snap = list(self.templates)
-        inc_snap = dict(self.template_inclusion)
-        # La lista a video vale per le persone dei reparti mostrati; le altre ricevono
-        # l'ordine salvato per il loro reparto, se c'e', altrimenti le stesse spunte.
-        folder = self._template_folder()
-        order_snap = list(self.doc_order)
-        modules_snap = {"orders": {k: dict(v) for k, v in
-                                   self.module_settings.get("orders", {}).items()}}
-        ui_depts = self._current_departments()
+        plan_options = {
+            "folder": self._template_folder(),
+            "output_dir": Path(self.output_dir.get()).expanduser(),
+            "doc_order": list(self.doc_order),
+            "inclusion": dict(self.template_inclusion),
+            "module_settings": {"orders": {k: dict(v) for k, v in
+                                           self.module_settings.get("orders", {}).items()}},
+            "shown_departments": self._current_departments(),
+        }
         saved_snap = dict(self.saved_hashes) if self.saved_hashes else {}
-        dept_opts = {d.upper() for d in department_options(tpl_snap)}
-        out_dir_path = Path(self.output_dir.get()).expanduser()
+        out_dir_path = plan_options["output_dir"]
         pdf_options = self._pdf_options()
 
         def work2():
-            ok = skip = fail = 0
+            ok = fail = 0
+            plan = BatchPlan()
             details: list[str] = []
-            # Prima si validano tutte le righe, poi si generano tutti i dossier insieme
-            # (una sola sessione Office, oppure in parallelo senza Office).
-            jobs: list[DossierJob] = []
-            job_rows: list[int] = []
-            reserved: set[Path] = set()
             try:
-                for idx, row in enumerate(rows, start=1):
-                    nome = (row.get("Nome") or "").strip()
-                    data = (row.get("Data") or "").strip()
-                    reparto_raw = (row.get("Reparto") or "").strip()
-                    reparto_list = [d.strip().upper() for d in reparto_raw.split("+") if d.strip()]
-                    if not reparto_list:
-                        if len(dept_opts) == 1:
-                            reparto_list = [next(iter(dept_opts))]
-                        else:
-                            skip += 1
-                            details.append(s_tr("bat_skip_nodept", i=idx))
-                            continue
-                    note = ""
-                    ruolo = ""
-                    if not nome:
-                        skip += 1
-                        details.append(s_tr("bat_skip_empty", i=idx))
-                        continue
-                    parsed = self._parse_date_str(data)
-                    if parsed is None:
-                        skip += 1
-                        details.append(s_tr("bat_skip_date", i=idx))
-                        continue
-                    invalid_depts = [d for d in reparto_list if d not in dept_opts]
-                    if invalid_depts:
-                        skip += 1
-                        details.append(s_tr("bat_skip_dept", i=idx, d=", ".join(invalid_depts)))
-                        continue
-                    sel = templates_for_departments(tpl_snap, reparto_list)
-                    linked = (order_for_department(modules_snap, reparto_list[0])
-                              if len(reparto_list) == 1 and reparto_list != ui_depts else None)
-                    if linked:
-                        filt = templates_from_saved_order(
-                            sel, modules_snap["orders"][linked], folder)
-                    else:
-                        filt = [t for t in apply_order(sel, order_snap, folder)
-                                if inc_snap.get(t.path, True)]
-                    if not filt:
-                        skip += 1
-                        for d in reparto_list:
-                            details.append(s_tr("bat_skip_dept", i=idx, d=d))
-                        continue
-                    dept_tag = safe_file_part("+".join(reparto_list))
-                    out_file = out_dir_path / (
-                        f"dossier_{safe_file_part(nome)}_{dept_tag}.pdf"
-                    )
-                    c = 2
-                    # I file del lotto non esistono ancora: si riservano i nomi gia' assegnati
-                    while out_file.exists() or out_file in reserved:
-                        out_file = out_dir_path / (
-                            f"dossier_{safe_file_part(nome)}_{dept_tag}_{c}.pdf"
-                        )
-                        c += 1
-                    reserved.add(out_file)
-                    jobs.append(DossierJob(out_file, nome, parsed.strftime("%d/%m/%Y"),
-                                           "+".join(reparto_list), filt, ruolo, note))
-                    job_rows.append(idx)
+                # Prima si validano tutte le righe, poi si generano tutti i dossier insieme
+                # (una sola sessione Office, oppure in parallelo senza Office).
+                plan = plan_batch(rows, tpl_snap, **plan_options)
+                details = [s_tr(key, **kw) for key, kw in plan.notes]
 
                 def progress_cb(step: int, total: int):
                     self._post("progress", {"step": step, "total": total})
 
-                results = build_pdfs(jobs, progress_cb, **pdf_options)
-                for idx, job, error in zip(job_rows, jobs, results):
+                results = build_pdfs(plan.jobs, progress_cb, **pdf_options)
+                for idx, job, error in zip(plan.rows, plan.jobs, results):
                     if error is None:
                         self._save_history(job.output_path, job.employee_name, job.department,
                                            len(job.templates), job.entry_date)
@@ -321,16 +256,10 @@ class BatchMixin:
                     else:
                         fail += 1
                         details.append(s_tr("bat_fail_generic", i=idx, e=str(error)))
-                hashes = dict(saved_snap)
-                for t in tpl_snap:
-                    try:
-                        hashes[str(t.path)] = compute_template_hash(t.path)
-                    except Exception:
-                        pass
-                save_hashes(hashes)
+                remember_template_hashes(tpl_snap, saved_snap)
             finally:
                 self._post("done_batch", {
-                    "ok": ok, "skip": skip, "fail": fail,
+                    "ok": ok, "skip": plan.skipped, "fail": fail,
                     "detail": "\n".join(details[-30:]),
                     "out_dir": str(out_dir_path),
                     "auto_open": bool(auto_open_batch),
@@ -339,103 +268,21 @@ class BatchMixin:
 
         threading.Thread(target=work2, daemon=True).start()
 
+    # Lettura degli elenchi in formazioni.batch_import; qui restano i nomi usati dall'app.
     def _parse_date_str(self, s: str):
-        if not s:
-            return None
-        if isinstance(s, datetime):
-            return s.date()
-        if isinstance(s, date):
-            return s
-        s_norm = str(s).strip().replace("-", "/").replace(".", "/")
-        for fmt in ("%d/%m/%Y", "%Y/%m/%d", "%d/%m/%y"):
-            try:
-                return datetime.strptime(s_norm, fmt).date()
-            except ValueError:
-                continue
-        return None
+        return parse_date(s)
 
     def _normalize_column_header(self, c: str) -> str:
-        c_norm = str(c).strip().lower().replace("  ", " ")
-        if any(k in c_norm for k in ("nome", "cognome", "name", "full name", "dipendente", "employee", "persona")):
-            return "Nome"
-        if any(k in c_norm for k in ("data", "date", "ingresso", "entrata", "entry")):
-            return "Data"
-        if any(k in c_norm for k in ("reparto", "department", "dipartimento", "settore", "area", "ufficio")):
-            return "Reparto"
-        if any(k in c_norm for k in ("ruolo", "role", "mansione", "qualifica", "position", "job")):
-            return "Ruolo"
-        if any(k in c_norm for k in ("note", "notes", "commento", "commenti", "comment", "osservazioni")):
-            return "Note"
-        return c
+        return normalize_column_header(c)
 
     def _coerce_date_value(self, val) -> str:
-        if val is None:
-            return ""
-        if isinstance(val, datetime):
-            return val.strftime("%d/%m/%Y")
-        if isinstance(val, date):
-            return val.strftime("%d/%m/%Y")
-        s = str(val).strip()
-        if not s:
-            return ""
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S",
-                    "%d/%m/%Y %H:%M", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s, fmt).strftime("%d/%m/%Y")
-            except ValueError:
-                continue
-        return s
+        return coerce_date_value(val)
 
     def _parse_batch_file(self, p: Path) -> list[dict[str, str]]:
-        suffix = p.suffix.lower()
-        if suffix == ".xls":
-            raise ValueError(self.tr("bat_xls_unsupported"))
-        if suffix == ".xlsx":
-            wb = load_workbook(p, data_only=True, read_only=True)
-            try:
-                ws = wb.worksheets[0]
-                rows_iter = ws.iter_rows(values_only=True)
-                raw_rows = [list(r) for r in rows_iter]
-            finally:
-                wb.close()
-            if not raw_rows:
-                return []
-            header = [str(c).strip().lower() if c is not None else "" for c in raw_rows[0]]
-            norm = [self._normalize_column_header(c) for c in header]
-            out: list[dict[str, str]] = []
-            for r in raw_rows[1:]:
-                if all(v is None or str(v).strip() == "" for v in r):
-                    continue
-                obj: dict[str, str] = {}
-                for key, val in zip(norm, r):
-                    if key == "Data":
-                        obj[key] = self._coerce_date_value(val)
-                    else:
-                        obj[key] = "" if val is None else str(val).strip()
-                out.append(obj)
-            return out
-        # CSV
-        text = p.read_text(encoding="utf-8-sig", errors="replace")
-        reader = csv.reader(text.splitlines())
-        rows_list = list(reader)
-        if not rows_list:
-            return []
-        header = [c.strip().lower() for c in rows_list[0]]
-        norm = [self._normalize_column_header(c) for c in header]
-        out = []
-        for r in rows_list[1:]:
-            if all(v.strip() == "" for v in r):
-                continue
-            while len(r) < len(norm):
-                r.append("")
-            obj = {}
-            for k, v in zip(norm, r):
-                if k == "Data":
-                    obj[k] = self._coerce_date_value(v)
-                else:
-                    obj[k] = v.strip()
-            out.append(obj)
-        return out
+        try:
+            return parse_batch_file(p)
+        except UnsupportedBatchFile:
+            raise ValueError(self.tr("bat_xls_unsupported")) from None
 
     # ---------------------- Modello Excel batch ---------------------------
     def download_batch_template(self):
