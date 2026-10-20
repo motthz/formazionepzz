@@ -1,4 +1,4 @@
 # Strumenti di sviluppo: test e controllo del codice
 -r requirements.txt
 pytest==9.1.1
-ruff==0.16.6
+ruff==0.16.9
